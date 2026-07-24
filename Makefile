@@ -116,5 +116,10 @@ android-apk:
 ios-ipa:
 	bash ./build/build.sh iOS
 
+# libretro core (bin/ikemen_go_libretro.so|dylib|dll)
+.PHONY: libretro
+libretro:
+	bash ./build/build_libretro.sh
+
 clean_appbundle:
 	rm -rf I.K.E.M.E.N-Go.app
