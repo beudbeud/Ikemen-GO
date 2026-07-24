@@ -114,6 +114,16 @@ func (s *System) newWindow(w, h int) (*Window, error) {
 			}
 		}
 
+		// A libretro core renders offscreen: keep the window hidden and exactly
+		// the game's size, so the readback needs no scaling.
+		if libretroPresent != nil {
+			windowFlags &^= sdl.WINDOW_FULLSCREEN_DESKTOP | sdl.WINDOW_RESIZABLE | sdl.WINDOW_SHOWN
+			windowFlags |= sdl.WINDOW_HIDDEN
+			fullscreen = false
+			x, y = 0, 0
+			w2, h2 = int32(w), int32(h) // ignore the config's window size
+		}
+
 		// On Android, use 0,0 for pos and allow SDL to resize w2/h2 to match the device screen
 		posX, posY := x, y
 		if runtime.GOOS == "android" {
@@ -152,6 +162,12 @@ func (s *System) newWindow(w, h int) (*Window, error) {
 }
 
 func (w *Window) SwapBuffers() {
+	// As a libretro core there is no visible window: the finished frame is read
+	// back and handed to the frontend instead. Covers every present site.
+	if libretroPresent != nil {
+		libretroPresent()
+		return
+	}
 	w.Window.GLSwap()
 }
 
@@ -362,6 +378,9 @@ func (w *Window) UpdateDebugFPS() {
 }
 
 func (w *Window) pollEvents() {
+	if libretroPollInput != nil {
+		libretroPollInput()
+	}
 	for event := sdl.PollEvent(); event != nil; event = sdl.PollEvent() {
 		switch t := event.(type) {
 		case sdl.ControllerAxisEvent:

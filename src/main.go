@@ -334,6 +334,11 @@ Debug Options:
 // Exit program without any errors
 func handleExit() {
 	sys.shutdown()
+	// A libretro core lives inside the frontend's process; it may not exit it.
+	if libretroExit != nil {
+		libretroExit()
+		return
+	}
 	os.Exit(0)
 }
 
@@ -422,5 +427,9 @@ func handlePanic(r interface{}) {
 
 	// Cleanup and exit
 	sys.shutdown()
+	if libretroExit != nil {
+		libretroExit()
+		return
+	}
 	os.Exit(1)
 }

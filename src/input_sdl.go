@@ -278,6 +278,10 @@ func (input *Input) IsJoystickPresent(joy int) bool {
 	if joy < 0 || joy >= len(input.controllers) {
 		return false
 	}
+	// As a libretro core the pads are virtual: the frontend always has them.
+	if libretroPresent != nil {
+		return joy < libretroPads
+	}
 	if input.controllers[joy] == nil {
 		return false
 	}
@@ -285,7 +289,7 @@ func (input *Input) IsJoystickPresent(joy int) bool {
 }
 
 func (input *Input) GetJoystickName(joy int) string {
-	if joy < 0 || joy >= len(input.controllers) {
+	if joy < 0 || joy >= len(input.controllers) || input.controllers[joy] == nil {
 		return ""
 	}
 	return input.controllers[joy].Name()
@@ -311,14 +315,14 @@ func (input *Input) GetJoystickButtons(joy int) []byte {
 }
 
 func (input *Input) GetJoystickPath(joy int) string {
-	if joy < 0 || joy >= len(input.controllers) {
+	if joy < 0 || joy >= len(input.controllers) || input.controllers[joy] == nil {
 		return ""
 	}
 	return input.controllers[joy].Path()
 }
 
 func (input *Input) GetJoystickGUID(joy int) string {
-	if joy < 0 || joy >= len(input.controllers) {
+	if joy < 0 || joy >= len(input.controllers) || input.controllers[joy] == nil {
 		return ""
 	}
 	pid := uint16(input.controllers[joy].Product())

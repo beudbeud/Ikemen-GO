@@ -467,8 +467,10 @@ func (s *System) init(w, h int32) *lua.LState {
 	Logcat("Check D: We are GOOD")
 	gfx.BeginFrame(false)
 
-	// And the audio.
-	speaker = &SDLSpeaker{}
+	// And the audio. A libretro core installs its own sink before we get here.
+	if speaker == nil {
+		speaker = &SDLSpeaker{}
+	}
 	speaker.Init(beep.SampleRate(sys.cfg.Sound.SampleRate), audioOutLen)
 	speaker.Play(NewNormalizer(s.soundMixer))
 	l := lua.NewState()
@@ -809,6 +811,15 @@ func (s *System) await(fps int) bool {
 	}
 
 	s.runMainThreadTask()
+
+	// As a libretro core the frontend paces us: SwapBuffers above already
+	// blocked until retro_run asked for this frame, so skip our own timing.
+	if libretroPresent != nil {
+		s.frameSkip = false
+		s.redrawWait.lastDraw = time.Now()
+		s.eventUpdate()
+		return !s.gameEnd
+	}
 
 	now := time.Now()
 	diff := s.redrawWait.nextTime.Sub(now)

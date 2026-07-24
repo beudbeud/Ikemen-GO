@@ -231,6 +231,41 @@ If you need changes in that wrapper, fork it and point the build to your fork vi
 
 ---
 
+## libretro core (RetroArch)
+
+Same dependencies as the desktop build of your platform, then:
+
+```bash
+./build/build_libretro.sh   # or: make libretro
+```
+
+This produces `bin/ikemen_go_libretro.so` (`.dylib` on macOS, `.dll` on Windows)
+and copies `ikemen_go_libretro.info` next to it. Install both where your frontend
+looks for cores, e.g. `~/.config/retroarch/cores` and
+`~/.config/retroarch/cores/../info`.
+
+Run it by loading the **folder of a normal Ikemen GO installation** as content
+(or any file inside it — `data/system.def` works). The engine keeps using that
+folder for `save/config.ini`, replays and screenshots, so a standalone install
+and the core share one configuration.
+
+Players 1-4 are RetroPad ports 1-4 with the engine's default joystick bindings;
+the keyboard is forwarded too, so the in-game input configuration screens work.
+
+Notes:
+
+* The core still creates its own hidden OpenGL window, so the machine needs a
+  working desktop GL driver. Prefer a non-SDL video driver in RetroArch
+  (`gl`/`glcore` on X11 or Wayland) to keep the two SDL users out of each other's way.
+* No savestates, no rewind, no netplay through the frontend — Ikemen has its own
+  netplay. Loading a character or stage can take longer than a frame, during which
+  the core repeats the last image instead of stalling the frontend.
+* Content can only be loaded once per frontend session: the engine's GL context
+  and Lua state outlive an unload, so closing the content means restarting
+  RetroArch before loading again.
+
+---
+
 ## Assets required to run (desktop builds)
 
 Place these folders **next to the executable or app bundle**:
