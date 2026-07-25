@@ -281,6 +281,16 @@ func libretroMessage(text string) {
 	fmt.Fprintln(os.Stderr, text)
 }
 
+// The desktop build pops these through GTK (see util_dialog_desktop.go). A core
+// has no desktop and no window of its own, so they go to the frontend's OSD.
+func ShowInfoDialog(message, title string) {
+	libretroMessage(title + ": " + message)
+}
+
+func ShowErrorDialog(message string) {
+	libretroMessage("I.K.E.M.E.N Error: " + message)
+}
+
 // --- input ---------------------------------------------------------------
 
 // RetroPad uses the SNES layout (B bottom, A right, Y left, X top); SDL's
