@@ -14,10 +14,12 @@
 #define RETRO_API_VERSION 1
 
 #define RETRO_ENVIRONMENT_SET_MESSAGE            6
-#define RETRO_ENVIRONMENT_SHUTDOWN               15
+#define RETRO_ENVIRONMENT_SHUTDOWN               7
+#define RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY   9
 #define RETRO_ENVIRONMENT_SET_PIXEL_FORMAT       10
 #define RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS  11
-#define RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY   9
+#define RETRO_ENVIRONMENT_GET_VARIABLE           15
+#define RETRO_ENVIRONMENT_SET_VARIABLES          16
 #define RETRO_ENVIRONMENT_SET_GEOMETRY           37
 
 #define RETRO_PIXEL_FORMAT_XRGB8888 1
@@ -53,6 +55,11 @@
 struct retro_message {
 	const char *msg;
 	unsigned    frames;
+};
+
+struct retro_variable {
+	const char *key;
+	const char *value;
 };
 
 struct retro_system_info {
@@ -111,5 +118,7 @@ size_t  ik_audio_batch(const int16_t *data, size_t frames);
 void    ik_input_poll(void);
 int16_t ik_input_state(unsigned port, unsigned device, unsigned index, unsigned id);
 void    ik_set_input_descriptors(void);
+/* Current value of a core option, or NULL if the frontend has none. */
+const char *ik_get_variable(const char *key);
 
 #endif

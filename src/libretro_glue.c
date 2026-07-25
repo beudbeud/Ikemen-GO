@@ -11,7 +11,28 @@ static retro_audio_sample_batch_t audio_batch_cb;
 static retro_input_poll_t         input_poll_cb;
 static retro_input_state_t        input_state_cb;
 
-IK_API void retro_set_environment(retro_environment_t cb)          { environ_cb = cb; }
+/* Core options. The frontend wants these while it is still setting callbacks,
+ * before any content exists, so they are declared here rather than from Go. */
+static const struct retro_variable ik_options[] = {
+	{ "ikemen_go_engine_files",
+	  "Engine files; Content folder|System directory" },
+	{ NULL, NULL }
+};
+
+IK_API void retro_set_environment(retro_environment_t cb)
+{
+	environ_cb = cb;
+	cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void *)ik_options);
+}
+
+const char *ik_get_variable(const char *key)
+{
+	struct retro_variable var = { key, NULL };
+	if (!environ_cb || !environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		return NULL;
+	return var.value;
+}
+
 IK_API void retro_set_video_refresh(retro_video_refresh_t cb)      { video_cb = cb; }
 IK_API void retro_set_audio_sample(retro_audio_sample_t cb)        { audio_cb = cb; }
 IK_API void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb) { audio_batch_cb = cb; }
