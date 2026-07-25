@@ -394,10 +394,8 @@ func (s *System) init(w, h int32) *lua.LState {
 	s.window.fullscreen = s.cfg.Video.Fullscreen && !forceWindowed
 
 	if strings.HasPrefix(renderName, "OpenGL") {
-		if ctx, err := s.window.GLCreateContext(); err != nil {
+		if err := s.window.createGLContext(); err != nil {
 			panic(fmt.Sprintf("Could not initialize context :( Reason? %s", err))
-		} else {
-			s.window.GLMakeCurrent(ctx)
 		}
 	}
 
@@ -537,7 +535,11 @@ func (s *System) shutdown() {
 		sys.rollback.session.SaveReplay()
 	}
 	gfx.Close()
-	s.window.Close()
+	// Nil when init() panicked before newWindow() returned, which is exactly
+	// when handlePanic wants to shut down and report the reason.
+	if s.window != nil {
+		s.window.Close()
+	}
 	if speaker != nil {
 		speaker.Close()
 	}

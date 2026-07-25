@@ -123,8 +123,9 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	// On a KMS/DRM frontend (Recalbox, a plain RetroArch on a TTY) there is no
 	// display server and RetroArch already owns the device, so SDL cannot open
 	// a second window. Its offscreen driver renders to an EGL surfaceless
-	// context instead, which is all the readback needs.
-	if os.Getenv("SDL_VIDEODRIVER") == "" &&
+	// context instead, which is all the readback needs. A `gles` core skips SDL
+	// video entirely and talks to EGL itself, so it needs none of this.
+	if libretroHeadlessGL == nil && os.Getenv("SDL_VIDEODRIVER") == "" &&
 		os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
 		os.Setenv("SDL_VIDEODRIVER", "offscreen")
 	}

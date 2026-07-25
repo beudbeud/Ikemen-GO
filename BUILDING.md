@@ -252,11 +252,35 @@ and the core share one configuration.
 Players 1-4 are RetroPad ports 1-4 with the engine's default joystick bindings;
 the keyboard is forwarded too, so the in-game input configuration screens work.
 
+### OpenGL ES build (embedded, KMS/DRM frontends)
+
+```bash
+IKEMEN_GLES=1 ./build/build_libretro.sh
+```
+
+This adds the `gles` and `egl` tags. The engine then uses the OpenGL ES 3.0
+renderer and takes its context straight from EGL — a pbuffer, no window, no SDL
+video driver, and no `libGL` in the resulting `NEEDED` list.
+
+That is the build for a console-style frontend such as Recalbox: there is no X
+or Wayland server to open a window on, and RetroArch already holds the DRM
+master, so SDL's `kmsdrm` driver cannot open a second one. It also suits the
+GPUs on those machines — Broadcom V3D and most Mali parts expose GL ES 3.1 but
+either no desktop GL at all or a version below the 3.3 the default renderer
+needs.
+
+Vulkan and the desktop GL renderer are compiled out of a `gles` build, so
+`Video.RenderMode` is ignored. The 3D shadow path needs GL ES 3.2 and is
+therefore unavailable on a 3.1 GPU; 2D content, which is everything M.U.G.E.N
+ever used, is unaffected.
+
 Notes:
 
-* The core still creates its own hidden OpenGL window, so the machine needs a
-  working desktop GL driver. Prefer a non-SDL video driver in RetroArch
-  (`gl`/`glcore` on X11 or Wayland) to keep the two SDL users out of each other's way.
+* The default build creates its own hidden OpenGL window, so the machine needs a
+  working desktop GL driver and a display server (SDL's `offscreen` video driver
+  covers a headless host if your SDL has it). Prefer a non-SDL video driver in
+  RetroArch (`gl`/`glcore` on X11 or Wayland) to keep the two SDL users out of
+  each other's way. The `gles` build needs none of this.
 * No savestates, no rewind, no netplay through the frontend — Ikemen has its own
   netplay. Loading a character or stage can take longer than a frame, during which
   the core repeats the last image instead of stalling the frontend.

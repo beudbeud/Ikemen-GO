@@ -24,6 +24,20 @@ func (s *System) newWindow(w, h int) (*Window, error) {
 	var w2, h2 int32 = int32(w), int32(h)
 	var fullscreen bool
 
+	// A headless core has no display to open: skip SDL's video subsystem
+	// altogether, since asking for it is what fails. The GL context comes from
+	// EGL in createGLContext, and the frontend supplies input, so the timer and
+	// the event queue are all that is left to initialize.
+	if libretroHeadlessGL != nil {
+		if err := sdl.Init(sdl.INIT_TIMER | sdl.INIT_EVENTS); err != nil {
+			return nil, fmt.Errorf("failed to init SDL: %w", err)
+		}
+		for i := range input.controllers {
+			input.controllerstate[i] = &ControllerState{Buttons: make(map[sdl.GameControllerButton]byte)}
+		}
+		return &Window{nil, s.cfg.Config.WindowTitle, 0, 0, w, h, false, false}, nil
+	}
+
 	if runtime.GOOS == "android" {
 		// On Android, we MUST use 0,0 or SDL ignores it anyway,
 		// but flags are the critical part.
@@ -203,17 +217,40 @@ func (w *Window) imageToSurface(img image.Image) (*sdl.Surface, error) {
 	return surface, nil
 }
 
+// createGLContext gives the renderer something to draw into. Headless there is
+// no window to hang a context off, so EGL provides one directly.
+func (w *Window) createGLContext() error {
+	if libretroHeadlessGL != nil {
+		return libretroHeadlessGL(w.w, w.h)
+	}
+	ctx, err := w.GLCreateContext()
+	if err != nil {
+		return err
+	}
+	w.GLMakeCurrent(ctx)
+	return nil
+}
+
 func (w *Window) SetIcon(icon []image.Image) {
+	if w.Window == nil {
+		return
+	}
 	if surface, err := w.imageToSurface(icon[0]); err == nil {
 		w.Window.SetIcon(surface)
 	}
 }
 
 func (w *Window) SetSwapInterval(interval int) {
+	if w.Window == nil {
+		return // no swap chain to pace: the frontend asks for each frame
+	}
 	gfx.SetVSync(interval)
 }
 
 func (w *Window) GetSize() (int, int) {
+	if w.Window == nil {
+		return w.w, w.h
+	}
 	w2, h2 := w.Window.GetSize()
 	return int(w2), int(h2)
 }
