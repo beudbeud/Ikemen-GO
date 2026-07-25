@@ -177,6 +177,9 @@ func realMain() {
 	if runtime.GOOS == "android" {
 		cfg.Video.RenderMode = "OpenGL ES 3.2"
 	}
+	if libretroConfigOverride != nil {
+		libretroConfigOverride(cfg)
+	}
 	sys.cfg = *cfg
 	// Logcat("LOG: Config Loaded. System Script: " + sys.cfg.Config.System)
 

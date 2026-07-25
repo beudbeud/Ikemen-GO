@@ -22,4 +22,14 @@ var (
 	// left it could open. Called on the game thread, which is where the context
 	// then lives.
 	libretroHeadlessGL func(w, h int) error
+	// libretroConfigOverride gets the config the moment it is read, before
+	// anything acts on it. The core uses it to point the engine's own files
+	// (scripts, common states, effects) somewhere other than the content
+	// folder, which is how a game folder built for an older Ikemen can still
+	// run: only its motif, chars, stages and sound are taken from it.
+	libretroConfigOverride func(*Config)
+	// libretroEngineRoot is where OpenFile looks when a relative path is not in
+	// the content folder. Empty unless the core was told to source the engine
+	// files from the frontend's system directory.
+	libretroEngineRoot string
 )

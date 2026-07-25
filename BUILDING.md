@@ -274,6 +274,30 @@ Vulkan and the desktop GL renderer are compiled out of a `gles` build, so
 therefore unavailable on a 3.1 GPU; 2D content, which is everything M.U.G.E.N
 ever used, is unaffected.
 
+### Core option: Engine files
+
+A game folder is usually a whole Ikemen GO release — its own `data/`,
+`external/` and `font/` alongside the chars and the motif. Load one built for an
+older Ikemen and the engine runs that release's Lua, which calls functions this
+one no longer has, and the core dies before drawing anything.
+
+The **Engine files** core option decides where those come from:
+
+| Value | Behaviour |
+| --- | --- |
+| `Content folder` (default) | The folder answers for everything, as a standalone install would. |
+| `System directory` | The engine's scripts, common states and effects come from `<system>/ikemen/`; the folder only supplies its motif, chars, stages and sound. |
+
+For the second, copy this repository's `data`, `external` and `font` into the
+frontend's system directory under `ikemen/` (`~/.local/share/retroarch/bios/ikemen`
+on a stock RetroArch, `/recalbox/share/bios/ikemen` on Recalbox, where the
+package installs them for you).
+
+It is not a compatibility layer. A folder whose *gameplay* lives in its own Lua —
+custom modes, a scripted arcade path — loses those and falls back to Ikemen's own
+menus, and chars using state controllers that no longer exist still break. What it
+buys is that a raw, unmigrated folder boots.
+
 Notes:
 
 * The default build creates its own hidden OpenGL window, so the machine needs a

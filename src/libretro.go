@@ -120,6 +120,8 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 		return C.bool(false)
 	}
 
+	libretroUseSystemEngine()
+
 	// On a KMS/DRM frontend (Recalbox, a plain RetroArch on a TTY) there is no
 	// display server and RetroArch already owns the device, so SDL cannot open
 	// a second window. Its offscreen driver renders to an EGL surfaceless
@@ -270,6 +272,86 @@ func libretroGameRoot(path string) string {
 		}
 	}
 	return dir
+}
+
+// libretroUseSystemEngine honours the "Engine files" core option. Set to
+// "System directory", the engine's own files come from <system>/ikemen instead
+// of the content folder, so a game folder built for an older Ikemen -- which
+// ships that release's data/ and external/ and would otherwise crash in its own
+// Lua -- contributes only its motif, chars, stages and sound.
+//
+// ponytail: no version negotiation, the newer files simply win. Ikemen has no
+// data format version to compare, and a pack that needs its own scripts is not
+// one this can rescue anyway; leaving the option off is the answer there.
+func libretroUseSystemEngine() {
+	key := C.CString("ikemen_go_engine_files")
+	defer C.free(unsafe.Pointer(key))
+	v := C.ik_get_variable(key)
+	if v == nil || C.GoString(v) != "System directory" {
+		return
+	}
+
+	var dir *C.char
+	if !C.ik_env(C.uint(C.RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY), unsafe.Pointer(&dir)) || dir == nil {
+		libretroMessage("Ikemen GO: no system directory, using the content's engine files")
+		return
+	}
+	root := filepath.Join(C.GoString(dir), "ikemen")
+	if fi, err := os.Stat(filepath.Join(root, "external", "script", "main.lua")); err != nil || fi.IsDir() {
+		libretroMessage("Ikemen GO: install data/, external/ and font/ in " + root)
+		return
+	}
+
+	libretroEngineRoot = root
+	// require() resolves through package.path, which gopher-lua builds from
+	// LUA_PATH. The trailing ";;" keeps the default, so the content folder
+	// still answers for anything the engine tree does not carry.
+	os.Setenv("LUA_PATH", filepath.Join(root, "?.lua")+";;")
+	libretroConfigOverride = func(cfg *Config) { libretroRebaseConfig(cfg, root) }
+}
+
+// libretroRebaseConfig repoints every engine-owned path at root. Motif is
+// deliberately left alone: that one belongs to the content.
+func libretroRebaseConfig(cfg *Config, root string) {
+	rebase := func(p string) string {
+		p = strings.TrimSpace(p)
+		if p == "" || filepath.IsAbs(p) {
+			return p
+		}
+		switch strings.SplitN(filepath.ToSlash(p), "/", 2)[0] {
+		case "data", "external", "font":
+			return filepath.Join(root, p)
+		}
+		return p
+	}
+	rebaseAll := func(l []string) {
+		for i := range l {
+			l[i] = rebase(l[i])
+		}
+	}
+	for _, m := range []map[string][]string{
+		cfg.Common.Air, cfg.Common.Cmd, cfg.Common.Const,
+		cfg.Common.States, cfg.Common.Fx, cfg.Common.Modules, cfg.Common.Lua,
+	} {
+		for _, l := range m {
+			rebaseAll(l)
+		}
+	}
+	rebaseAll(cfg.Config.WindowIcon)
+	cfg.Config.System = rebase(cfg.Config.System)
+	cfg.Config.GamepadMappings = rebase(cfg.Config.GamepadMappings)
+	cfg.Debug.Font = rebase(cfg.Debug.Font)
+
+	// A folder from an older Ikemen keeps its motif path in save/config.json,
+	// which this engine no longer reads, so it ends up with the default one --
+	// pointing into the engine tree, at a motif only the release bundle ships.
+	// data/system.def is where M.U.G.E.N has always put it, so try that before
+	// giving up. Anything with a working config.ini is left alone.
+	if _, err := os.Stat(cfg.Config.Motif); err != nil {
+		if _, err := os.Stat("data/system.def"); err == nil {
+			cfg.Config.Motif = "data/system.def"
+		}
+	}
 }
 
 func libretroMessage(text string) {

@@ -1707,6 +1707,16 @@ func OpenFile(filename string) (io.ReadSeekCloser, error) {
 	// Not a zip path, open as a normal file
 	f, err := os.Open(filename)
 	if err != nil {
+		// Last resort: a libretro core may have been told to take the engine's
+		// own files from elsewhere, so that a game folder built for an older
+		// Ikemen contributes only its motif, chars, stages and sound. Every
+		// read goes through here, which is why the fallback lives here and not
+		// at the handful of call sites that happen to name an engine file.
+		if libretroEngineRoot != "" && !filepath.IsAbs(filename) {
+			if f2, err2 := os.Open(filepath.Join(libretroEngineRoot, filename)); err2 == nil {
+				return f2, nil
+			}
+		}
 		return nil, err
 	}
 	return f, nil // *os.File implements io.ReadSeekCloser
