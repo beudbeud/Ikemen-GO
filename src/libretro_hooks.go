@@ -15,4 +15,11 @@ var (
 	libretroPads int
 	// libretroExit replaces os.Exit: a core may not kill the frontend process.
 	libretroExit func()
+	// libretroHeadlessGL creates the engine's GL context straight from EGL,
+	// with no window and no SDL video driver. Non-nil only in a `gles` core,
+	// which is the build for frontends that already own the display: on a
+	// KMS/DRM console the frontend holds the DRM master and SDL has no driver
+	// left it could open. Called on the game thread, which is where the context
+	// then lives.
+	libretroHeadlessGL func(w, h int) error
 )

@@ -1,3 +1,5 @@
+//go:build !gles
+
 package main
 
 import (
