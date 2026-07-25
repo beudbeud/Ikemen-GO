@@ -8,21 +8,11 @@ import (
 	"os"
 
 	findfont "github.com/flopp/go-findfont"
-	"github.com/sqweek/dialog"
 )
 
 // Log writer implementation
 func NewLogWriter() io.Writer {
 	return os.Stderr
-}
-
-// Message box implementation
-func ShowInfoDialog(message, title string) {
-	dialog.Message(message).Title(title).Info()
-}
-
-func ShowErrorDialog(message string) {
-	dialog.Message(message).Title("I.K.E.M.E.N Error").Error()
 }
 
 // TTF font loading
