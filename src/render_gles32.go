@@ -47,14 +47,18 @@ func (r *Renderer_GLES32) newShaderProgram(vert, frag, geo, name string, crashWh
 	Logcat("GLES: [LOCKED] Starting: " + name)
 	var vertObj, fragObj, prog uint32
 
+	// Through chkEX like the geometry stage below, so crashWhenFail callers get
+	// the compile log. They discard the error and use the program straight
+	// away, so returning nil here only turns a readable failure into a nil
+	// dereference somewhere else.
 	vertObj, err = r.compileShader(gl.VERTEX_SHADER, vert)
-	if err != nil {
+	if chkEX(err, "Shader compilation error on "+name+"\n", crashWhenFail) {
 		return nil, err
 	}
 	Logcat("GLES: Vertex Obj created: " + name)
 
 	fragObj, err = r.compileShader(gl.FRAGMENT_SHADER, frag)
-	if err != nil {
+	if chkEX(err, "Shader compilation error on "+name+"\n", crashWhenFail) {
 		return nil, err
 	}
 	Logcat("GLES: Frag Obj created: " + name)
@@ -126,9 +130,10 @@ func (r *Renderer_GLES32) compileShader(shaderType uint32, src string) (uint32, 
 	// If your file doesn't have it, we add it here.
 	fullSrc := src
 	if !strings.HasPrefix(strings.TrimSpace(src), "#version") {
-		// Anchor to 320 es for best feature compatibility
-		header := "#version 320 es\n"
-		fullSrc = header + src
+		// Whatever the driver actually is. Asking for more than it has is a
+		// compile error on the very first shader, and plenty of embedded GPUs
+		// stop below 3.2 -- Broadcom V3D reports GL ES 3.1.
+		fullSrc = "#version " + r.glslVersion + "\n" + src
 	}
 
 	// Ensure null-termination for CGO
@@ -561,6 +566,9 @@ type Renderer_GLES32 struct {
 
 	enableModel  bool
 	enableShadow bool
+	// glslVersion is the "#version" line compileShader prepends, picked from
+	// the context in Init.
+	glslVersion string
 	GLES32State
 }
 type GLES32State struct {
@@ -677,6 +685,22 @@ func (r *Renderer_GLES32) InitModelShader() error {
 	return nil
 }
 
+// glesShadingLanguageVersion reports the highest ES GLSL version the current
+// context accepts, as the string that goes after "#version". The shaders are
+// written against 3.0 and guard anything newer, so the floor is safe.
+func glesShadingLanguageVersion() string {
+	var major, minor int32
+	gl.GetIntegerv(gl.MAJOR_VERSION, &major)
+	gl.GetIntegerv(gl.MINOR_VERSION, &minor)
+	if major > 3 || (major == 3 && minor >= 2) {
+		return "320 es" // the highest ES GLSL that exists
+	}
+	if major == 3 && minor == 1 {
+		return "310 es"
+	}
+	return "300 es"
+}
+
 // Render initialization.
 // Creates the default shaders, the framebuffer and enables MSAA.
 func (r *Renderer_GLES32) Init() {
@@ -688,6 +712,9 @@ func (r *Renderer_GLES32) Init() {
 	} else {
 		Logcat(fmt.Sprintf("Using OpenGL %v (%v)", gl.GoStr(gl.GetString(gl.VERSION)), gl.GoStr(gl.GetString(gl.RENDERER))))
 	}
+
+	r.glslVersion = glesShadingLanguageVersion()
+	Logcat("GLES: Shaders compiled as #version " + r.glslVersion)
 
 	// Logcat("GLES: Querying Max Samples")
 	// var maxSamples int32
@@ -709,6 +736,13 @@ func (r *Renderer_GLES32) Init() {
 
 	r.enableModel = sys.cfg.Video.EnableModel
 	r.enableShadow = sys.cfg.Video.EnableModelShadow
+	// Shadows are drawn with a geometry shader into a cube map array, and
+	// neither exists before GL ES 3.2. Dropping just the shadows here keeps
+	// models working on a 3.1 GPU; leaving it to the shader compile to fail
+	// would take the whole model path down with it.
+	if r.glslVersion != "320 es" {
+		r.enableShadow = false
+	}
 
 	// Generate VAO's
 	gl.GenVertexArrays(1, &r.spriteVAO)
