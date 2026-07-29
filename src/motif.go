@@ -2107,6 +2107,16 @@ func (m *Motif) mergeWithInheritance(specs []InheritSpec) {
 		for suf := range suffixes {
 			dstKey := sp.DstPrefix + suf
 			srcKey := sp.SrcPrefix + suf
+			// Skip face.random/face2.random and face.slot/face2.slot anim/spr inheritance
+			lowerDst := strings.ToLower(sp.DstPrefix)
+			if (strings.Contains(lowerDst, ".face.random.") ||
+				strings.Contains(lowerDst, ".face2.random.") ||
+				strings.Contains(lowerDst, "face.slot.") ||
+				strings.Contains(lowerDst, "face2.slot.")) &&
+				(strings.EqualFold(suf, "anim") ||
+					strings.EqualFold(suf, "spr")) {
+				continue
+			}
 			lowerFull := strings.ToLower(dstKey)
 			if shouldSkip(lowerFull) {
 				continue
@@ -2158,6 +2168,7 @@ func (m *Motif) mergeWithInheritance(specs []InheritSpec) {
 			query := strings.ToLower(secPath + "." + dstKey)
 			if err := m.SetValueUpdate(query, val); err != nil {
 				//fmt.Printf("Warning: inheritance set failed for %s = %q: %v\n", query, val, err)
+				continue
 			}
 
 			// Remember only anim/spr values that were actually inherited into the destination.
@@ -2230,12 +2241,20 @@ func (m *Motif) overrideParams() {
 		{SrcSec: "Option Info", SrcPrefix: "menu.", DstSec: "Option Info", DstPrefix: "keymenu."},
 		// [Select Info]
 		{SrcSec: "Select Info", SrcPrefix: "p1.face.", DstSec: "Select Info", DstPrefix: "p1.face.done."},
+		{SrcSec: "Select Info", SrcPrefix: "p1.face.", DstSec: "Select Info", DstPrefix: "p1.face.random."},
+		{SrcSec: "Select Info", SrcPrefix: "p1.face.", DstSec: "Select Info", DstPrefix: "p1.face.slot."},
 		{SrcSec: "Select Info", SrcPrefix: "p1.face.", DstSec: "Select Info", DstPrefix: "p1.face.loading."},
 		{SrcSec: "Select Info", SrcPrefix: "p1.face2.", DstSec: "Select Info", DstPrefix: "p1.face2.done."},
+		{SrcSec: "Select Info", SrcPrefix: "p1.face2.", DstSec: "Select Info", DstPrefix: "p1.face2.random."},
+		{SrcSec: "Select Info", SrcPrefix: "p1.face2.", DstSec: "Select Info", DstPrefix: "p1.face2.slot."},
 		{SrcSec: "Select Info", SrcPrefix: "p1.face2.", DstSec: "Select Info", DstPrefix: "p1.face2.loading."},
 		{SrcSec: "Select Info", SrcPrefix: "p2.face.", DstSec: "Select Info", DstPrefix: "p2.face.done."},
+		{SrcSec: "Select Info", SrcPrefix: "p2.face.", DstSec: "Select Info", DstPrefix: "p2.face.random."},
+		{SrcSec: "Select Info", SrcPrefix: "p2.face.", DstSec: "Select Info", DstPrefix: "p2.face.slot."},
 		{SrcSec: "Select Info", SrcPrefix: "p2.face.", DstSec: "Select Info", DstPrefix: "p2.face.loading."},
 		{SrcSec: "Select Info", SrcPrefix: "p2.face2.", DstSec: "Select Info", DstPrefix: "p2.face2.done."},
+		{SrcSec: "Select Info", SrcPrefix: "p2.face2.", DstSec: "Select Info", DstPrefix: "p2.face2.random."},
+		{SrcSec: "Select Info", SrcPrefix: "p2.face2.", DstSec: "Select Info", DstPrefix: "p2.face2.slot."},
 		{SrcSec: "Select Info", SrcPrefix: "p2.face2.", DstSec: "Select Info", DstPrefix: "p2.face2.loading."},
 		{SrcSec: "Select Info", SrcPrefix: "p1.face.", DstSec: "Select Info", DstPrefix: "p1.palmenu.preview."},
 		{SrcSec: "Select Info", SrcPrefix: "p2.face.", DstSec: "Select Info", DstPrefix: "p2.palmenu.preview."},
@@ -3461,6 +3480,10 @@ func (ch *MotifChallenger) reset(m *Motif) {
 func (ch *MotifChallenger) init(m *Motif) {
 	if !m.ChallengerInfo.Enabled || !ch.enabled {
 		ch.initialized = true
+		return
+	}
+
+	if m.AttractMode.Enabled && sys.credits == 0 {
 		return
 	}
 
@@ -6527,11 +6550,13 @@ func victoryPortraitAnim(m *Motif, sc *SelectChar, slot string,
 		if len(a.anim.sff.palList.paletteMap) > 0 {
 			a = a.Copy()
 			isCopied = true
-			a.anim.sff.palList.paletteMap[0] = pal - 1
+			if idx, ok := a.anim.sff.palList.PalTable[[2]uint16{1, uint16(pal)}]; ok {
+				a.anim.sff.palList.paletteMap[0] = idx
+			}
 		}
 		//fmt.Printf("[Victory] slot=%s -> applied palette %d\n", slot, pal)
 	}
-
+	// Apply pn.lose.brightness
 	if brightness > 0 && brightness < 256 && a.anim != nil && a.anim.sff != nil {
 		if !isCopied {
 			a = a.Copy()
