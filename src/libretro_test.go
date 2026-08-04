@@ -34,6 +34,25 @@ func TestLibretroConvertFrame(t *testing.T) {
 	}
 }
 
+func TestLibretroFlipRows(t *testing.T) {
+	// 2x2, bottom-up. Row 0 is the bottom of the picture.
+	src := []uint8{
+		1, 2, 3, 4, 5, 6, 7, 8, // bottom row
+		9, 10, 11, 12, 13, 14, 15, 16, // top row
+	}
+	dst := make([]uint8, len(src))
+	libretroFlipRows(dst, src, 2, 2)
+	want := []uint8{
+		9, 10, 11, 12, 13, 14, 15, 16,
+		1, 2, 3, 4, 5, 6, 7, 8,
+	}
+	for i := range want {
+		if dst[i] != want[i] {
+			t.Fatalf("byte %d = %d, want %d (%v)", i, dst[i], want[i], dst)
+		}
+	}
+}
+
 func TestLibretroResolutionSize(t *testing.T) {
 	for _, c := range []struct {
 		value  string
