@@ -35,6 +35,11 @@ func (s *System) newWindow(w, h int) (*Window, error) {
 		for i := range input.controllers {
 			input.controllerstate[i] = &ControllerState{Buttons: make(map[sdl.GameControllerButton]byte)}
 		}
+		// Match the windowed path below: an explicit WindowWidth/WindowHeight
+		// sizes the pbuffer too.
+		if s.cfg.Video.WindowWidth > 0 || s.cfg.Video.WindowHeight > 0 {
+			w, h = s.cfg.Video.WindowWidth, s.cfg.Video.WindowHeight
+		}
 		return &Window{nil, s.cfg.Config.WindowTitle, 0, 0, w, h, false, false}, nil
 	}
 
