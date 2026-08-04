@@ -75,6 +75,29 @@ func TestLibretroResolutionSize(t *testing.T) {
 	}
 }
 
+func TestLibretroRebasePath(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "data"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "data", "action.zss"), nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Present in the engine tree: rebased.
+	if got, want := libretroRebasePath("data/action.zss", root), filepath.Join(root, "data", "action.zss"); got != want {
+		t.Errorf("present: got %q, want %q", got, want)
+	}
+	// Absent from the engine tree (old layout): the content's path survives.
+	if got := libretroRebasePath("data/gofx.def", root); got != "data/gofx.def" {
+		t.Errorf("absent: got %q, want content path", got)
+	}
+	// Not engine-owned: untouched.
+	if got := libretroRebasePath("chars/foo/foo.def", root); got != "chars/foo/foo.def" {
+		t.Errorf("chars: got %q", got)
+	}
+}
+
 func TestLibretroGameRoot(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "data"), 0755); err != nil {

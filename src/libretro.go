@@ -458,20 +458,29 @@ func libretroForceResolution() {
 	}
 }
 
+// libretroRebasePath repoints an engine-owned relative path at root -- but
+// only when the engine tree actually carries the file. The content still
+// answers for the rest: an old pack may use a layout the current release has
+// moved (data/gofx.def vs data/gofx/gofx.def), and blindly rebasing those
+// turns a working reference into a missing file at fight load.
+func libretroRebasePath(p, root string) string {
+	p = strings.TrimSpace(p)
+	if p == "" || filepath.IsAbs(p) {
+		return p
+	}
+	switch strings.SplitN(filepath.ToSlash(p), "/", 2)[0] {
+	case "data", "external", "font":
+		if abs := filepath.Join(root, p); FileExist(abs) != "" {
+			return abs
+		}
+	}
+	return p
+}
+
 // libretroRebaseConfig repoints every engine-owned path at root. Motif is
 // deliberately left alone: that one belongs to the content.
 func libretroRebaseConfig(cfg *Config, root string) {
-	rebase := func(p string) string {
-		p = strings.TrimSpace(p)
-		if p == "" || filepath.IsAbs(p) {
-			return p
-		}
-		switch strings.SplitN(filepath.ToSlash(p), "/", 2)[0] {
-		case "data", "external", "font":
-			return filepath.Join(root, p)
-		}
-		return p
-	}
+	rebase := func(p string) string { return libretroRebasePath(p, root) }
 	rebaseAll := func(l []string) {
 		for i := range l {
 			l[i] = rebase(l[i])
