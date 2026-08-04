@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -121,6 +122,7 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	}
 
 	libretroUseSystemEngine()
+	libretroForceResolution()
 
 	// On a KMS/DRM frontend (Recalbox, a plain RetroArch on a TTY) there is no
 	// display server and RetroArch already owns the device, so SDL cannot open
@@ -308,6 +310,48 @@ func libretroUseSystemEngine() {
 	// still answers for anything the engine tree does not carry.
 	os.Setenv("LUA_PATH", filepath.Join(root, "?.lua")+";;")
 	libretroConfigOverride = func(cfg *Config) { libretroRebaseConfig(cfg, root) }
+}
+
+// libretroResolutionSize turns a "480p"-style option value into a window size
+// at the game's own aspect ratio. ok is false for "Content config".
+func libretroResolutionSize(value string, gw, gh int32) (w, h int, ok bool) {
+	h, err := strconv.Atoi(strings.TrimSuffix(value, "p"))
+	if err != nil || h <= 0 {
+		return 0, 0, false
+	}
+	if gw <= 0 || gh <= 0 {
+		gw, gh = 4, 3
+	}
+	w = h * int(gw) / int(gh)
+	w += w & 1 // keep the width even: 853x480 -> 854x480
+	return w, h, true
+}
+
+// libretroForceResolution honours the "Resolution" core option: the frame
+// handed to the frontend is rendered at the chosen height, width following
+// the content's aspect ratio, without editing its config file. The game's
+// logical resolution (GameWidth/GameHeight) is untouched -- stages and
+// motifs keep the coordinates they were built for, only the output scales.
+func libretroForceResolution() {
+	key := C.CString("ikemen_go_resolution")
+	defer C.free(unsafe.Pointer(key))
+	v := C.ik_get_variable(key)
+	if v == nil {
+		return
+	}
+	choice := C.GoString(v)
+	if _, _, ok := libretroResolutionSize(choice, 0, 0); !ok {
+		return // "Content config"
+	}
+	prev := libretroConfigOverride
+	libretroConfigOverride = func(cfg *Config) {
+		if prev != nil {
+			prev(cfg)
+		}
+		w, h, _ := libretroResolutionSize(choice, cfg.Video.GameWidth, cfg.Video.GameHeight)
+		cfg.Video.WindowWidth, cfg.Video.WindowHeight = w, h
+		cfg.Video.Fullscreen = false // the chosen size must win over the content's
+	}
 }
 
 // libretroRebaseConfig repoints every engine-owned path at root. Motif is

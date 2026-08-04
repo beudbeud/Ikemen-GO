@@ -16,6 +16,8 @@ static retro_input_state_t        input_state_cb;
 static const struct retro_variable ik_options[] = {
 	{ "ikemen_go_engine_files",
 	  "Engine files; Content folder|System directory" },
+	{ "ikemen_go_resolution",
+	  "Resolution; Content config|240p|480p|720p|1080p" },
 	{ NULL, NULL }
 };
 
