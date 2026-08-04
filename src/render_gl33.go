@@ -1755,6 +1755,17 @@ func (r *Renderer_GL33) ReadPixels(data []uint8, width, height int) {
 	gl.ReadPixels(0, 0, int32(width), int32(height), gl.RGBA, gl.UNSIGNED_BYTE, unsafe.Pointer(&data[0]))
 }
 
+// ReadPixelsBGRA reads the frame back in libretro's XRGB8888 byte order,
+// saving the per-pixel CPU swap. Reports whether the driver accepted it.
+func (r *Renderer_GL33) ReadPixelsBGRA(data []uint8, width, height int) bool {
+	gl.BindFramebuffer(gl.READ_FRAMEBUFFER, 0)
+	for i := 0; i < 8 && gl.GetError() != gl.NO_ERROR; i++ {
+		// drain stale errors so the check below is attributable to this read
+	}
+	gl.ReadPixels(0, 0, int32(width), int32(height), gl.BGRA, gl.UNSIGNED_BYTE, unsafe.Pointer(&data[0]))
+	return gl.GetError() == gl.NO_ERROR
+}
+
 func (r *Renderer_GL33) EnableScissor(x, y, width, height int32) {
 	// Flip Y to OpenGL convention
 	realY := sys.scrrect[3] - (y + height)

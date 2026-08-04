@@ -51,9 +51,15 @@ var lr struct {
 	started  bool
 	quitting bool
 
-	w, h int
-	raw  []uint8 // RGBA straight from the GL readback
-	out  []uint8 // XRGB8888, top-down: what the frontend sees
+	w, h       int
+	repW, repH int  // last geometry reported to the frontend (retro thread only)
+	raw        []uint8 // straight from the GL readback
+	out        []uint8 // XRGB8888, top-down: what the frontend sees
+
+	bgraTried, bgraOK bool // whether the driver accepts a BGRA readback
+
+	applied       map[string]string // option values the running engine was built with
+	warnedOptions bool              // an "applies after restart" message is on screen
 
 	speaker  *LibretroSpeaker
 	audioAcc float64
@@ -91,10 +97,20 @@ func retro_get_system_av_info(info *C.struct_retro_system_av_info) {
 	if w <= 0 || h <= 0 {
 		w, h = 640, 480
 	}
+	// max_* is the frontend's allocation hint and cannot be raised later, so
+	// leave room: the engine can recreate its window bigger mid-run.
+	maxW, maxH := w, h
+	if maxW < 1920 {
+		maxW = 1920
+	}
+	if maxH < 1080 {
+		maxH = 1080
+	}
+	lr.repW, lr.repH = w, h
 	info.geometry.base_width = C.uint(w)
 	info.geometry.base_height = C.uint(h)
-	info.geometry.max_width = C.uint(w)
-	info.geometry.max_height = C.uint(h)
+	info.geometry.max_width = C.uint(maxW)
+	info.geometry.max_height = C.uint(maxH)
 	info.geometry.aspect_ratio = C.float(float32(w) / float32(h))
 	info.timing.fps = C.double(libretroFPS)
 	info.timing.sample_rate = C.double(libretroSampleRate())
@@ -123,6 +139,11 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 
 	libretroUseSystemEngine()
 	libretroForceResolution()
+	libretroForceRenderer()
+	lr.applied = make(map[string]string, len(libretroOptionKeys))
+	for _, k := range libretroOptionKeys {
+		lr.applied[k] = libretroVariable(k)
+	}
 
 	// On a KMS/DRM frontend (Recalbox, a plain RetroArch on a TTY) there is no
 	// display server and RetroArch already owns the device, so SDL cannot open
@@ -196,8 +217,28 @@ func retro_run() {
 
 	C.ik_input_poll()
 
+	// The two options are only read when content loads (window, engine root and
+	// Lua state are all built from them), so a change mid-run cannot be
+	// applied; say so instead of silently ignoring it.
+	var dirty C.bool
+	if bool(C.ik_env(C.uint(C.RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE), unsafe.Pointer(&dirty))) && bool(dirty) {
+		libretroWarnPendingOptions()
+	}
+
 	select {
 	case <-lr.frameDone:
+		// The channel receive orders this read after the game thread's write,
+		// so lr.w/lr.h are stable here. Tell the frontend before handing it a
+		// frame with a new geometry.
+		if lr.w != lr.repW || lr.h != lr.repH {
+			lr.repW, lr.repH = lr.w, lr.h
+			geo := C.struct_retro_game_geometry{
+				base_width:   C.uint(lr.w),
+				base_height:  C.uint(lr.h),
+				aspect_ratio: C.float(float32(lr.w) / float32(lr.h)),
+			}
+			C.ik_env(C.uint(C.RETRO_ENVIRONMENT_SET_GEOMETRY), unsafe.Pointer(&geo))
+		}
 		C.ik_video(unsafe.Pointer(&lr.out[0]), C.uint(lr.w), C.uint(lr.h), C.size_t(lr.w*4))
 		// The game thread is parked in libretroPresentFrame right now, which is
 		// the only moment it is safe to write the shared input state.
@@ -226,14 +267,40 @@ func libretroPresentFrame() {
 		lr.raw = make([]uint8, w*h*4)
 		lr.out = make([]uint8, w*h*4)
 	}
-	gfx.ReadPixels(lr.raw, w, h)
-	// Vulkan already reads back top-down; OpenGL does not.
-	libretroConvertFrame(lr.out, lr.raw, w, h, !strings.HasPrefix(gfx.GetName(), "Vulkan"))
+	// A BGRA readback is already XRGB8888, leaving only the row flip; fall
+	// back to RGBA plus the CPU channel swap when the driver refuses (checked
+	// on every read: the first one decides, a later failure self-heals).
+	// Vulkan reads back top-down RGBA and always takes the fallback path.
+	if r, ok := gfx.(bgraReader); ok && (!lr.bgraTried || lr.bgraOK) {
+		lr.bgraOK = r.ReadPixelsBGRA(lr.raw, w, h)
+		lr.bgraTried = true
+	}
+	if lr.bgraOK {
+		libretroFlipRows(lr.out, lr.raw, w, h)
+	} else {
+		gfx.ReadPixels(lr.raw, w, h)
+		libretroConvertFrame(lr.out, lr.raw, w, h, !strings.HasPrefix(gfx.GetName(), "Vulkan"))
+	}
 
 	lr.readyOnce.Do(func() { close(lr.ready) })
 
 	lr.frameDone <- struct{}{}
 	<-lr.frameReq
+}
+
+// bgraReader is implemented by the GL renderers: a readback that already
+// matches libretro's XRGB8888 byte order, reporting whether the driver took it.
+type bgraReader interface {
+	ReadPixelsBGRA(data []uint8, width, height int) bool
+}
+
+// libretroFlipRows turns GL's bottom-up rows into the top-down order libretro
+// wants; the pixels themselves are already in the right byte order.
+func libretroFlipRows(dst, src []uint8, w, h int) {
+	stride := w * 4
+	for y := 0; y < h; y++ {
+		copy(dst[y*stride:(y+1)*stride], src[(h-1-y)*stride:(h-y)*stride])
+	}
 }
 
 // GL hands back bottom-up RGBA; libretro wants top-down XRGB8888, which is
@@ -286,10 +353,7 @@ func libretroGameRoot(path string) string {
 // data format version to compare, and a pack that needs its own scripts is not
 // one this can rescue anyway; leaving the option off is the answer there.
 func libretroUseSystemEngine() {
-	key := C.CString("ikemen_go_engine_files")
-	defer C.free(unsafe.Pointer(key))
-	v := C.ik_get_variable(key)
-	if v == nil || C.GoString(v) != "System directory" {
+	if libretroVariable("ikemen_go_engine_files") != "System directory" {
 		return
 	}
 
@@ -310,6 +374,52 @@ func libretroUseSystemEngine() {
 	// still answers for anything the engine tree does not carry.
 	os.Setenv("LUA_PATH", filepath.Join(root, "?.lua")+";;")
 	libretroConfigOverride = func(cfg *Config) { libretroRebaseConfig(cfg, root) }
+}
+
+var libretroOptionKeys = []string{
+	"ikemen_go_engine_files", "ikemen_go_resolution", "ikemen_go_renderer",
+}
+
+// libretroForceRenderer honours the "Renderer" core option: override the
+// content's RenderMode with a value selectRenderer actually accepts. The gles
+// core has a single renderer and ignores RenderMode entirely.
+func libretroForceRenderer() {
+	switch v := libretroVariable("ikemen_go_renderer"); v {
+	case "OpenGL 3.3", "Vulkan 1.3":
+		prev := libretroConfigOverride
+		libretroConfigOverride = func(cfg *Config) {
+			if prev != nil {
+				prev(cfg)
+			}
+			cfg.Video.RenderMode = v
+		}
+	}
+}
+
+// libretroVariable returns the frontend's current value for a core option,
+// or "" if it has none.
+func libretroVariable(name string) string {
+	key := C.CString(name)
+	defer C.free(unsafe.Pointer(key))
+	if v := C.ik_get_variable(key); v != nil {
+		return C.GoString(v)
+	}
+	return ""
+}
+
+// libretroWarnPendingOptions tells the player an option change is waiting for
+// a restart, and clears the warning if the change is reverted.
+func libretroWarnPendingOptions() {
+	pending := false
+	for _, k := range libretroOptionKeys {
+		if libretroVariable(k) != lr.applied[k] {
+			pending = true
+		}
+	}
+	if pending && !lr.warnedOptions {
+		libretroMessage("Ikemen GO: core option changes apply after restarting the frontend")
+	}
+	lr.warnedOptions = pending
 }
 
 // libretroResolutionSize turns a "480p"-style option value into a window size
@@ -333,13 +443,7 @@ func libretroResolutionSize(value string, gw, gh int32) (w, h int, ok bool) {
 // logical resolution (GameWidth/GameHeight) is untouched -- stages and
 // motifs keep the coordinates they were built for, only the output scales.
 func libretroForceResolution() {
-	key := C.CString("ikemen_go_resolution")
-	defer C.free(unsafe.Pointer(key))
-	v := C.ik_get_variable(key)
-	if v == nil {
-		return
-	}
-	choice := C.GoString(v)
+	choice := libretroVariable("ikemen_go_resolution")
 	if _, _, ok := libretroResolutionSize(choice, 0, 0); !ok {
 		return // "Content config"
 	}

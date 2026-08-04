@@ -20,7 +20,10 @@
 #define RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS  11
 #define RETRO_ENVIRONMENT_GET_VARIABLE           15
 #define RETRO_ENVIRONMENT_SET_VARIABLES          16
+#define RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE    17
 #define RETRO_ENVIRONMENT_SET_GEOMETRY           37
+#define RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION 52
+#define RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2      67
 
 #define RETRO_PIXEL_FORMAT_XRGB8888 1
 
@@ -60,6 +63,35 @@ struct retro_message {
 struct retro_variable {
 	const char *key;
 	const char *value;
+};
+
+/* Core options v2 (RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2). The layout matches
+ * libretro.h; values arrays are NULL-terminated and sized to the API's max. */
+struct retro_core_option_value {
+	const char *value;
+	const char *label;
+};
+
+struct retro_core_option_v2_category {
+	const char *key;
+	const char *desc;
+	const char *info;
+};
+
+struct retro_core_option_v2_definition {
+	const char *key;
+	const char *desc;
+	const char *desc_categorized;
+	const char *info;
+	const char *info_categorized;
+	const char *category_key;
+	struct retro_core_option_value values[128];
+	const char *default_value;
+};
+
+struct retro_core_options_v2 {
+	struct retro_core_option_v2_category   *categories;
+	struct retro_core_option_v2_definition *definitions;
 };
 
 struct retro_system_info {

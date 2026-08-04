@@ -12,19 +12,64 @@ static retro_input_poll_t         input_poll_cb;
 static retro_input_state_t        input_state_cb;
 
 /* Core options. The frontend wants these while it is still setting callbacks,
- * before any content exists, so they are declared here rather than from Go. */
+ * before any content exists, so they are declared here rather than from Go.
+ * The v2 tables carry the descriptions; the retro_variable table is the
+ * fallback for frontends predating options v2. Keep both in sync. */
+static struct retro_core_option_v2_definition ik_option_defs[] = {
+	{ "ikemen_go_engine_files",
+	  "Engine files", NULL,
+	  "Where the engine's own data/, external/ and font/ come from. 'System "
+	  "directory' reads them from <system>/ikemen, so packs built for older "
+	  "engine releases run on this core's scripts. Applied when content loads.",
+	  NULL, NULL,
+	  { { "Content folder", NULL }, { "System directory", NULL }, { NULL, NULL } },
+	  "Content folder" },
+	{ "ikemen_go_resolution",
+	  "Resolution", NULL,
+	  "Render at this height, width following the content's aspect ratio, "
+	  "without editing its config file. 'Content config' keeps the pack's own "
+	  "window size. Applied when content loads.",
+	  NULL, NULL,
+	  { { "Content config", NULL }, { "240p", NULL }, { "480p", NULL },
+	    { "720p", NULL }, { "1080p", NULL }, { NULL, NULL } },
+	  "Content config" },
+	{ "ikemen_go_renderer",
+	  "Renderer", NULL,
+	  "Override the content's RenderMode, for packs whose config asks for a "
+	  "renderer this machine does not have. The GL ES core has a single "
+	  "renderer and ignores this. Applied when content loads.",
+	  NULL, NULL,
+	  { { "Content config", NULL }, { "OpenGL 3.3", NULL },
+	    { "Vulkan 1.3", NULL }, { NULL, NULL } },
+	  "Content config" },
+	{ NULL, NULL, NULL, NULL, NULL, NULL, { { NULL, NULL } }, NULL }
+};
+
+static struct retro_core_option_v2_category ik_option_cats[] = {
+	{ NULL, NULL, NULL }
+};
+
+static struct retro_core_options_v2 ik_options_v2 = {
+	ik_option_cats, ik_option_defs
+};
+
 static const struct retro_variable ik_options[] = {
 	{ "ikemen_go_engine_files",
 	  "Engine files; Content folder|System directory" },
 	{ "ikemen_go_resolution",
 	  "Resolution; Content config|240p|480p|720p|1080p" },
+	{ "ikemen_go_renderer",
+	  "Renderer; Content config|OpenGL 3.3|Vulkan 1.3" },
 	{ NULL, NULL }
 };
 
 IK_API void retro_set_environment(retro_environment_t cb)
 {
+	unsigned ver = 0;
 	environ_cb = cb;
-	cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void *)ik_options);
+	cb(RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION, &ver);
+	if (ver < 2 || !cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2, &ik_options_v2))
+		cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void *)ik_options);
 }
 
 const char *ik_get_variable(const char *key)
