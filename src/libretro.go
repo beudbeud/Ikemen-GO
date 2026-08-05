@@ -451,6 +451,8 @@ func libretroSpriteDetail() {
 				libretroSpriteShrink = 1 // "Content config": native output
 			}
 		}
+		fmt.Fprintf(os.Stderr, "Ikemen GO: sprite detail %q -> texture divisor %d (game %dp, output %q)\n",
+			choice, libretroSpriteShrink, cfg.Video.GameHeight, resChoice)
 	})
 }
 
