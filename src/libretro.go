@@ -150,9 +150,7 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	libretroForceInput()
 	libretroForceResolution()
 	libretroForceRenderer()
-	if libretroVariable("ikemen_go_sprite_detail") == "Half" {
-		libretroSpriteShrink = 2
-	}
+	libretroSpriteDetail()
 	lr.applied = make(map[string]string, len(libretroOptionKeys))
 	for _, k := range libretroOptionKeys {
 		lr.applied[k] = libretroVariable(k)
@@ -421,6 +419,39 @@ func libretroOverrideConfig(f func(*Config)) {
 		}
 		f(cfg)
 	}
+}
+
+// libretroSpriteShrinkFactor picks the texture divisor for a game rendered at
+// gameH but shown at outH: enough that the output cannot tell, never more
+// than 4 (a stage zooming in past that would show it on any screen).
+func libretroSpriteShrinkFactor(gameH, outH int32) int32 {
+	if gameH <= 0 || outH <= 0 {
+		return 1
+	}
+	return Clamp((gameH+outH-1)/outH, 1, 4)
+}
+
+// libretroSpriteDetail honours the "Sprite detail" core option. "Auto" derives
+// the texture divisor from the "Resolution" option against the content's own
+// height -- a 720p pack shown at 480p uploads at half detail; at native
+// output nothing shrinks.
+func libretroSpriteDetail() {
+	choice := libretroVariable("ikemen_go_sprite_detail")
+	resChoice := libretroVariable("ikemen_go_resolution")
+	libretroOverrideConfig(func(cfg *Config) {
+		switch choice {
+		case "Half":
+			libretroSpriteShrink = 2
+		case "Full":
+			libretroSpriteShrink = 1
+		default: // Auto
+			if _, outH, ok := libretroResolutionSize(resChoice, cfg.Video.GameWidth, cfg.Video.GameHeight); ok {
+				libretroSpriteShrink = libretroSpriteShrinkFactor(cfg.Video.GameHeight, int32(outH))
+			} else {
+				libretroSpriteShrink = 1 // "Content config": native output
+			}
+		}
+	})
 }
 
 // libretroForceInput replaces the content's [Keys_*] and [Joystick_*] sections
