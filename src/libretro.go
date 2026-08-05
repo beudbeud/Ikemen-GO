@@ -519,6 +519,9 @@ func libretroForceResolution() {
 		// The forced framing must reach the screen: a stale window size from
 		// the content's config would letterbox or crop it.
 		cfg.Video.WindowWidth, cfg.Video.WindowHeight = 0, 0
+		// sysSet() snapshotted these from the config before this override ran,
+		// and the window and logical resolution are built from the snapshot.
+		sys.gameWidth, sys.gameHeight = float32(w), float32(h)
 	})
 }
 
