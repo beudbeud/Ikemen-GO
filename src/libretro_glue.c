@@ -25,21 +25,11 @@ static struct retro_core_option_v2_definition ik_option_defs[] = {
 	  { { "Content folder", NULL }, { "System directory", NULL }, { NULL, NULL } },
 	  "Content folder" },
 	{ "ikemen_go_resolution",
-	  "Output resolution", NULL,
-	  "Size of the image handed to the frontend, width following the game's "
-	  "aspect ratio. Does NOT change the game's internal resolution or "
-	  "framing -- see 'Game resolution' for that. 'Content config' keeps the "
-	  "pack's own window size. Applied when content loads.",
-	  NULL, NULL,
-	  { { "Content config", NULL }, { "240p", NULL }, { "480p", NULL },
-	    { "720p", NULL }, { "1080p", NULL }, { NULL, NULL } },
-	  "Content config" },
-	{ "ikemen_go_game_resolution",
-	  "Game resolution", NULL,
-	  "Force the game's internal resolution (GameWidth/GameHeight), the way "
-	  "editing the pack's config.ini would: framing, aspect and screenpack "
-	  "layout follow. A pack laid out for another aspect may misplace "
-	  "elements. Applied when content loads.",
+	  "Resolution", NULL,
+	  "Run the game at this resolution, the way editing GameWidth/GameHeight "
+	  "in the pack's config.ini would: framing, aspect and screenpack layout "
+	  "follow. With 'Sprite detail: Auto', sprite textures shrink to match "
+	  "when the pack was authored bigger. Applied when content loads.",
 	  NULL, NULL,
 	  { { "Content config", NULL }, { "320x240 (4:3)", NULL },
 	    { "640x480 (4:3)", NULL }, { "854x480 (16:9)", NULL },
@@ -79,9 +69,7 @@ static const struct retro_variable ik_options[] = {
 	{ "ikemen_go_engine_files",
 	  "Engine files; Content folder|System directory" },
 	{ "ikemen_go_resolution",
-	  "Output resolution; Content config|240p|480p|720p|1080p" },
-	{ "ikemen_go_game_resolution",
-	  "Game resolution; Content config|320x240 (4:3)|640x480 (4:3)|854x480 (16:9)|1280x720 (16:9)" },
+	  "Resolution; Content config|320x240 (4:3)|640x480 (4:3)|854x480 (16:9)|1280x720 (16:9)" },
 	{ "ikemen_go_renderer",
 	  "Renderer; Content config|OpenGL 3.3|Vulkan 1.3" },
 	{ "ikemen_go_sprite_detail",
