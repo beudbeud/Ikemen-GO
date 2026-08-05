@@ -154,6 +154,22 @@ func TestLibretroSearchOrder(t *testing.T) {
 	}
 }
 
+func TestLibretroSpriteShrinkFactor(t *testing.T) {
+	for _, c := range []struct{ gameH, outH, want int32 }{
+		{720, 480, 2},  // 720p pack on a 480p CRT
+		{720, 720, 1},  // native
+		{720, 1080, 1}, // upscaled output never shrinks
+		{1080, 480, 3},
+		{720, 240, 3},
+		{1080, 240, 4}, // clamped: ceil(4.5) -> 4
+		{0, 480, 1},    // no game size yet
+	} {
+		if got := libretroSpriteShrinkFactor(c.gameH, c.outH); got != c.want {
+			t.Errorf("factor(%d, %d) = %d, want %d", c.gameH, c.outH, got, c.want)
+		}
+	}
+}
+
 func TestLibretroShrinkSprite(t *testing.T) {
 	old := libretroSpriteShrink
 	t.Cleanup(func() { libretroSpriteShrink = old })

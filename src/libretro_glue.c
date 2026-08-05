@@ -44,13 +44,14 @@ static struct retro_core_option_v2_definition ik_option_defs[] = {
 	  "Content config" },
 	{ "ikemen_go_sprite_detail",
 	  "Sprite detail", NULL,
-	  "Upload large sprite textures at half resolution, quartering the RAM "
-	  "they take -- on a shared-memory GPU that is system RAM. Invisible on a "
-	  "CRT or low-resolution output; fonts and UI keep full detail. Applied "
-	  "when content loads.",
+	  "Resolution of large sprite textures, which on a shared-memory GPU live "
+	  "in system RAM. 'Auto' matches the 'Resolution' option: a 720p pack "
+	  "shown at 480p uploads at half detail (a quarter of the RAM), invisible "
+	  "at that output. Fonts and UI always keep full detail. Applied when "
+	  "content loads.",
 	  NULL, NULL,
-	  { { "Full", NULL }, { "Half", NULL }, { NULL, NULL } },
-	  "Full" },
+	  { { "Auto", NULL }, { "Full", NULL }, { "Half", NULL }, { NULL, NULL } },
+	  "Auto" },
 	{ NULL, NULL, NULL, NULL, NULL, NULL, { { NULL, NULL } }, NULL }
 };
 
@@ -70,7 +71,7 @@ static const struct retro_variable ik_options[] = {
 	{ "ikemen_go_renderer",
 	  "Renderer; Content config|OpenGL 3.3|Vulkan 1.3" },
 	{ "ikemen_go_sprite_detail",
-	  "Sprite detail; Full|Half" },
+	  "Sprite detail; Auto|Full|Half" },
 	{ NULL, NULL }
 };
 
