@@ -139,7 +139,7 @@ func TestLibretroSpriteShrinkFactor(t *testing.T) {
 		{720, 1080, 1}, // upscaled output never shrinks
 		{1080, 480, 3},
 		{720, 240, 3},
-		{1080, 240, 4}, // clamped: ceil(4.5) -> 4
+		{1080, 240, 4}, // ceil(4.5) = 5, clamped to 4
 		{0, 480, 1},    // no game size yet
 	} {
 		if got := libretroSpriteShrinkFactor(c.gameH, c.outH); got != c.want {

@@ -357,6 +357,9 @@ func libretroGameRoot(path string) string {
 	// level down before giving up.
 	if entries, err := os.ReadDir(dir); err == nil {
 		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
 			if fi, err := os.Stat(filepath.Join(dir, e.Name(), "data")); err == nil && fi.IsDir() {
 				return filepath.Join(dir, e.Name())
 			}

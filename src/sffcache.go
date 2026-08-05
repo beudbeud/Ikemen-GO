@@ -120,10 +120,15 @@ func (w *sfcWriter) writeBytes(b []byte) {
 
 // sffCacheStore writes the decoded state of s. list is the sprite order of the
 // source file, links[i] >= 0 marks a sprite sharing the texture of list[links[i]].
+//
+// The write is synchronous on the loading thread: paletteMap and PalTable are
+// remapped at runtime once the engine owns the Sff, so writing later would
+// race. It only ever runs on the first, uncached load -- the one that already
+// pays for the full decode.
 func sffCacheStore(filename string, char, isActPal bool, s *Sff,
-	list []*Sprite, links []int32, cap map[*Sprite]sffCaptureEntry) {
+	list []*Sprite, links []int32, captured map[*Sprite]sffCaptureEntry) {
 	path := sffCachePath(filename, char, isActPal)
-	if path == "" || cap == nil {
+	if path == "" || captured == nil {
 		return
 	}
 	size, mtime, ok := sffCacheSourceStat(filename)
@@ -179,11 +184,11 @@ func sffCacheStore(filename string, char, isActPal bool, s *Sff,
 		w.write(spr.coldepth)
 		w.write(uint32(len(spr.Pal)))
 		w.write(spr.Pal)
-		switch e, captured := cap[spr]; {
+		switch e, hasPix := captured[spr]; {
 		case links != nil && links[i] >= 0:
 			w.write(byte(2))
 			w.write(links[i])
-		case captured:
+		case hasPix:
 			w.write(byte(1))
 			w.write(e.w)
 			w.write(e.h)
@@ -364,11 +369,7 @@ func sffCacheLoad(filename string, char, isActPal bool) *Sff {
 			if depth > 8 {
 				filter = sys.cfg.Video.RGBSpriteBilinearFilter
 			}
-			sprRef := spr
-			sys.mainThreadTask <- func() {
-				sprRef.Tex = gfx.newTexture(w, h, depth, filter)
-				sprRef.Tex.SetData(data)
-			}
+			spr.uploadTexture(data, w, h, depth, filter)
 		case 2:
 			links = append(links, link{i, int(r.i32())})
 		}
