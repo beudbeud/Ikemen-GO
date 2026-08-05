@@ -148,6 +148,7 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 		}
 	}
 	libretroForceInput()
+	libretroForceGameResolution() // before output size and sprite detail: both read the game size
 	libretroForceResolution()
 	libretroForceRenderer()
 	libretroSpriteDetail()
@@ -406,7 +407,7 @@ func libretroUseSystemEngine() {
 
 var libretroOptionKeys = []string{
 	"ikemen_go_engine_files", "ikemen_go_resolution", "ikemen_go_renderer",
-	"ikemen_go_sprite_detail",
+	"ikemen_go_sprite_detail", "ikemen_go_game_resolution",
 }
 
 // libretroOverrideConfig appends f to the chain run on the config the moment
@@ -445,14 +446,18 @@ func libretroSpriteDetail() {
 		case "Full":
 			libretroSpriteShrink = 1
 		default: // Auto
-			if _, outH, ok := libretroResolutionSize(resChoice, cfg.Video.GameWidth, cfg.Video.GameHeight); ok {
-				libretroSpriteShrink = libretroSpriteShrinkFactor(cfg.Video.GameHeight, int32(outH))
-			} else {
-				libretroSpriteShrink = 1 // "Content config": native output
+			// The assets were authored for the height the content's config
+			// declared, even when "Game resolution" reframes the game lower.
+			gameH := Max(cfg.Video.GameHeight, libretroContentGameH)
+			outH := cfg.Video.GameHeight // no output override: native
+			if _, oh, ok := libretroResolutionSize(resChoice, cfg.Video.GameWidth, cfg.Video.GameHeight); ok {
+				outH = int32(oh)
 			}
+			libretroSpriteShrink = libretroSpriteShrinkFactor(gameH, outH)
 		}
-		fmt.Fprintf(os.Stderr, "Ikemen GO: sprite detail %q -> texture divisor %d (game %dp, output %q)\n",
-			choice, libretroSpriteShrink, cfg.Video.GameHeight, resChoice)
+		fmt.Fprintf(os.Stderr, "Ikemen GO: sprite detail %q -> texture divisor %d (assets %dp, game %dp, output %q)\n",
+			choice, libretroSpriteShrink, Max(cfg.Video.GameHeight, libretroContentGameH),
+			cfg.Video.GameHeight, resChoice)
 	})
 }
 
@@ -491,6 +496,39 @@ func libretroForceInput() {
 				Start: "START", D: "LB", W: "LT", Menu: "BACK",
 			}
 		}
+	})
+}
+
+// libretroContentGameH is the game height the content's own config declared,
+// captured before "Game resolution" overwrites it: the pack's assets were
+// authored for this density, which is what sprite detail "Auto" must judge.
+var libretroContentGameH int32
+
+// libretroForceGameResolution honours the "Game resolution" core option: it
+// rewrites the content's logical resolution -- framing, aspect, screenpack
+// coordinates -- the way editing GameWidth/Height in its config.ini would.
+// Risky by nature (a screenpack laid out for another aspect can misplace
+// elements), so the default leaves the content alone.
+func libretroForceGameResolution() {
+	var w, h int32
+	switch libretroVariable("ikemen_go_game_resolution") {
+	case "320x240 (4:3)":
+		w, h = 320, 240
+	case "640x480 (4:3)":
+		w, h = 640, 480
+	case "854x480 (16:9)":
+		w, h = 854, 480
+	case "1280x720 (16:9)":
+		w, h = 1280, 720
+	default:
+		return
+	}
+	libretroOverrideConfig(func(cfg *Config) {
+		libretroContentGameH = cfg.Video.GameHeight
+		cfg.Video.GameWidth, cfg.Video.GameHeight = w, h
+		// The forced framing must reach the screen: a stale window size from
+		// the content's config would letterbox or crop it.
+		cfg.Video.WindowWidth, cfg.Video.WindowHeight = 0, 0
 	})
 }
 
