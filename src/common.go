@@ -447,6 +447,14 @@ func decodeShiftJIS(input string) string {
 
 func FileExist(filename string) string {
 	filename = filepath.ToSlash(filename)
+	// Engine scripts come from the system tree first when a libretro core was
+	// pointed at one: old packs ship their release's whole script directory,
+	// and the content's copy would win here otherwise.
+	if libretroEngineRoot != "" && !filepath.IsAbs(filename) && libretroEngineFirst(filename) {
+		if p := FileExist(filepath.Join(libretroEngineRoot, filename)); p != "" {
+			return p
+		}
+	}
 	isZip, zipFilePath, pathInZip := IsZipPath(filename)
 	if isZip {
 		var actualZipFilePathOnDisk string
@@ -1711,6 +1719,12 @@ func OpenFile(filename string) (io.ReadSeekCloser, error) {
 	}
 
 	// Not a zip path, open as a normal file
+	// Engine scripts: system tree first, same rule as FileExist.
+	if libretroEngineRoot != "" && !filepath.IsAbs(filename) && libretroEngineFirst(filename) {
+		if f, err := os.Open(filepath.Join(libretroEngineRoot, filename)); err == nil {
+			return f, nil
+		}
+	}
 	f, err := os.Open(filename)
 	if err != nil {
 		// Last resort: a libretro core may have been told to take the engine's
