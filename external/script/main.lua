@@ -1675,6 +1675,17 @@ for line in content:gmatch('[^\r\n]+') do
 	end
 end
 
+--drop story arcs whose script does not exist: packs ship half-finished or
+--mispathed entries, and selecting one would only error out of the mode loop
+for i = #main.t_selStoryMode, 1, -1 do
+	local v = main.t_selStoryMode[i]
+	if not main.f_fileExists(v.path) then
+		print('Story arc "' .. v.name .. '" removed: file not found: ' .. v.path)
+		t_storyModeList[v.name] = nil
+		table.remove(main.t_selStoryMode, i)
+	end
+end
+
 for k, v in ipairs(main.t_selStoryMode) do
 	main.t_unlockLua.modes[v.name] = v.unlock
 end
