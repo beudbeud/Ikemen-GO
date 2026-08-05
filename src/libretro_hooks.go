@@ -1,5 +1,10 @@
 package main
 
+import (
+	"path/filepath"
+	"strings"
+)
+
 // Hooks the libretro core installs into the engine. Both are zero in a normal
 // standalone build, so `libretroPresent != nil` is the "am I a core?" test.
 // ponytail: two package vars instead of a platform interface; there is exactly
@@ -33,3 +38,12 @@ var (
 	// files from the frontend's system directory.
 	libretroEngineRoot string
 )
+
+// libretroEngineFirst reports whether a relative path is pure engine code, for
+// which the system tree must win over the content's copy: old packs ship the
+// whole script directory of their release, and running those against the
+// current engine only errors. Everything else stays content-first -- data/
+// carries the pack's own motif and select screen.
+func libretroEngineFirst(p string) bool {
+	return strings.HasPrefix(strings.ToLower(filepath.ToSlash(p)), "external/script/")
+}
