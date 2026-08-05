@@ -778,6 +778,7 @@ func (s *Sprite) SetPxl(px []byte) {
 		return
 	}
 	px, w, h := libretroShrinkSprite(px, int32(s.Size[0]), int32(s.Size[1]), 1)
+	sffCaptureAdd(s, px, w, h, 8)
 	sys.mainThreadTask <- func() {
 		s.Tex = gfx.newTexture(w, h, 8, false)
 		s.Tex.SetData(px)
@@ -786,6 +787,7 @@ func (s *Sprite) SetPxl(px []byte) {
 
 func (s *Sprite) SetRaw(data []byte, sprWidth int32, sprHeight int32, sprDepth int32) {
 	data, w, h := libretroShrinkSprite(data, sprWidth, sprHeight, sprDepth/8)
+	sffCaptureAdd(s, data, w, h, sprDepth)
 	sys.mainThreadTask <- func() {
 		s.Tex = gfx.newTexture(w, h, sprDepth, sys.cfg.Video.RGBSpriteBilinearFilter)
 		s.Tex.SetData(data)
@@ -1517,6 +1519,14 @@ func loadSff(filename string, char bool, isMainThread bool, isActPal bool) (*Sff
 	s := newSff()
 	s.filename = filename
 
+	if cached := sffCacheLoad(filename, char, isActPal); cached != nil {
+		return cached, nil
+	}
+	recording := sffCacheBegin()
+	if recording {
+		defer sffCacheEnd() // clears the capture on every error path
+	}
+
 	// Where fight-load time actually goes is invisible without this; a Pi
 	// spends seconds here and the log tells whether a cache would pay off.
 	start := time.Now()
@@ -1548,6 +1558,13 @@ func loadSff(filename string, char bool, isMainThread bool, isActPal bool) (*Sff
 
 	// Load sprites
 	spriteList := make([]*Sprite, int(s.header.NumberOfSprites))
+	var cacheLinks []int32
+	if recording {
+		cacheLinks = make([]int32, len(spriteList))
+		for i := range cacheLinks {
+			cacheLinks[i] = -1
+		}
+	}
 	var prev *Sprite
 	shofs := int64(s.header.FirstSpriteHeaderOffset)
 	for i := 0; i < len(spriteList); i++ {
@@ -1580,6 +1597,9 @@ func loadSff(filename string, char bool, isMainThread bool, isActPal bool) (*Sff
 				//sys.mainThreadTask <- func() {
 				dst.shareCopy(src)
 				//}
+				if recording {
+					cacheLinks[i] = int32(indexOfPrevious)
+				}
 			} else {
 				spriteList[i].palidx = 0 // index out of range
 			}
@@ -1624,17 +1644,11 @@ func loadSff(filename string, char bool, isMainThread bool, isActPal bool) (*Sff
 		return nil, ErrLoadingCanceled
 	}
 
-	/*
-		SffCache[filename] = &SffCacheEntry{*s, 1}
-		runtime.SetFinalizer(s, func(s *Sff) {
-			if cached, ok := SffCache[filename]; ok {
-				cached.refCount--
-				if cached.refCount == 0 {
-					delete(SffCache, filename)
-				}
-			}
-		})
-	*/
+	// Only files that actually cost something earn a cache entry; a fast sff
+	// would spend more time writing than it ever saves.
+	if recording && time.Since(start) > 200*time.Millisecond {
+		sffCacheStore(filename, char, isActPal, s, spriteList, cacheLinks, sffCacheEnd())
+	}
 
 	return s, nil
 }

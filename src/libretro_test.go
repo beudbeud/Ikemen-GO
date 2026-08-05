@@ -218,6 +218,91 @@ func TestLibretroDefaultCommon(t *testing.T) {
 	}
 }
 
+func TestSffCacheRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", dir)
+	wd, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(wd) })
+
+	// The cache is libretro-only; fake being a core for the test.
+	oldPresent := libretroPresent
+	libretroPresent = func() {}
+	t.Cleanup(func() { libretroPresent = oldPresent })
+
+	// A fake source file the cache validates against.
+	src := "fake.sff"
+	if err := os.WriteFile(src, []byte("not a real sff"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build an Sff the way loadSff would leave it.
+	s := newSff()
+	s.filename = src
+	s.header.NumberOfSprites = 3
+	s.palList.SetSource(0, []uint32{0xff00ff00, 0x11223344})
+	s.palList.PalTable[[2]uint16{1, 1}] = 0
+	s.palList.numcols[[2]uint16{1, 1}] = 2
+
+	mk := func(g, n uint16) *Sprite {
+		spr := newSprite()
+		spr.Group, spr.Number = g, n
+		spr.Size = [2]uint16{4, 2}
+		spr.Offset = [2]int16{-3, 7}
+		spr.palidx = 0
+		spr.coldepth = 8
+		return spr
+	}
+	list := []*Sprite{mk(0, 0), mk(0, 1), mk(9000, 0)}
+	links := []int32{-1, 0, -1} // sprite 1 shares sprite 0's texture
+	for _, spr := range list {
+		s.sprites[[2]uint16{spr.Group, spr.Number}] = spr
+	}
+	cap := map[*Sprite]sffCaptureEntry{
+		list[0]: {data: []byte{1, 2, 3, 4, 5, 6, 7, 8}, w: 4, h: 2, depth: 8},
+		// list[1] is a link, list[2] stays blank
+	}
+
+	sffCacheStore(src, true, false, s, list, links, cap)
+
+	// mainThreadTask must be drainable or the load blocks.
+	old := sys.mainThreadTask
+	sys.mainThreadTask = make(chan func(), 16)
+	t.Cleanup(func() { sys.mainThreadTask = old })
+
+	got := sffCacheLoad(src, true, false)
+	if got == nil {
+		t.Fatal("cache miss after store")
+	}
+	if got.header.NumberOfSprites != 3 || len(got.sprites) != 3 {
+		t.Fatalf("header/sprites: %d/%d", got.header.NumberOfSprites, len(got.sprites))
+	}
+	spr := got.sprites[[2]uint16{0, 0}]
+	if spr == nil || spr.Size != [2]uint16{4, 2} || spr.Offset != [2]int16{-3, 7} || spr.palidx != 0 {
+		t.Fatalf("sprite fields: %+v", spr)
+	}
+	if p := got.palList.Get(0); len(p) != 2 || p[0] != 0xff00ff00 {
+		t.Errorf("palette: %v", p)
+	}
+	if got.palList.numcols[[2]uint16{1, 1}] != 2 {
+		t.Errorf("numcols lost")
+	}
+
+	// Wrong flags -> different key -> miss.
+	if sffCacheLoad(src, false, false) != nil {
+		t.Error("flag change should miss")
+	}
+	// Touch the source -> stale -> miss and self-clean.
+	if err := os.WriteFile(src, []byte("changed!"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if sffCacheLoad(src, true, false) != nil {
+		t.Error("stale cache should miss")
+	}
+}
+
 func TestLibretroFindMotif(t *testing.T) {
 	chdir := func(dir string) {
 		t.Helper()
