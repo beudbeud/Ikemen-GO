@@ -544,9 +544,43 @@ func libretroRebasePath(p, root string) string {
 	return p
 }
 
+// libretroDefaultCommon replaces the [Common] lists with the engine defaults.
+// Those lists are engine plumbing: a pack's config names the files of its own
+// release, and mixing them with the tree's files does not compile -- the
+// tree's dizzy.zss needs the tree's gofx, which an old Fx list never names.
+func libretroDefaultCommon(cfg *Config) {
+	if cfg.DefaultOnlyIni == nil {
+		return
+	}
+	sec, err := cfg.DefaultOnlyIni.GetSection("Common")
+	if err != nil {
+		return
+	}
+	get := func(name string) map[string][]string {
+		var out []string
+		for _, v := range SplitAndTrim(sec.Key(name).String(), ",") {
+			if v != "" {
+				out = append(out, v)
+			}
+		}
+		if out == nil {
+			return map[string][]string{}
+		}
+		return map[string][]string{name: out}
+	}
+	cfg.Common.Air = get("Air")
+	cfg.Common.Cmd = get("Cmd")
+	cfg.Common.Const = get("Const")
+	cfg.Common.States = get("States")
+	cfg.Common.Fx = get("Fx")
+	cfg.Common.Modules = get("Modules")
+	cfg.Common.Lua = get("Lua")
+}
+
 // libretroRebaseConfig repoints every engine-owned path at root. Motif is
 // deliberately left alone: that one belongs to the content.
 func libretroRebaseConfig(cfg *Config, root string) {
+	libretroDefaultCommon(cfg) // the rebase below points the lists at root
 	rebase := func(p string) string { return libretroRebasePath(p, root) }
 	rebaseAll := func(l []string) {
 		for i := range l {
