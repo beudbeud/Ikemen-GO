@@ -1488,6 +1488,14 @@ func findActiveSff(filename string) *Sff {
 		}
 	}
 
+	// Scan the loaded motif: mode starts reload it, and a big screenpack sff
+	// (measured 4.5s on a Pi) was decoded twice for nothing.
+	for _, s := range []*Sff{sys.motif.Sff, sys.motif.GlyphsSff} {
+		if s != nil && s.filename == filename {
+			return s
+		}
+	}
+
 	return nil
 }
 
