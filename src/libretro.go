@@ -644,23 +644,6 @@ func libretroRebaseConfig(cfg *Config, root string) {
 		}
 	}
 
-	libretroOldConfigSize(cfg)
-}
-
-// libretroOldConfigSize restores the pack's real resolution from the old
-// save/config.json. This engine no longer reads that format: it generates a
-// default config.ini instead, which mislabels an SD pack as the default
-// resolution -- and everything keyed on the game size (framing, sprite detail
-// "Auto") then judges from a lie.
-func libretroOldConfigSize(cfg *Config) {
-	b, err := os.ReadFile(filepath.Join("save", "config.json"))
-	if err != nil {
-		return
-	}
-	var old struct{ GameWidth, GameHeight int32 }
-	if json.Unmarshal(b, &old) == nil && old.GameWidth > 0 && old.GameHeight > 0 {
-		cfg.Video.GameWidth, cfg.Video.GameHeight = old.GameWidth, old.GameHeight
-	}
 }
 
 // libretroFindMotif locates the content's screenpack when its config does not:

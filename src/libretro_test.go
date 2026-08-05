@@ -212,36 +212,6 @@ func TestLibretroDefaultCommon(t *testing.T) {
 	}
 }
 
-func TestLibretroOldConfigSize(t *testing.T) {
-	dir := t.TempDir()
-	old, _ := os.Getwd()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chdir(old) })
-
-	var cfg Config
-	cfg.Video.GameWidth, cfg.Video.GameHeight = 1280, 720
-
-	// No config.json: engine-generated values stay.
-	libretroOldConfigSize(&cfg)
-	if cfg.Video.GameWidth != 1280 {
-		t.Errorf("no json: got %d", cfg.Video.GameWidth)
-	}
-
-	// Old pack: the json is the authored config, its size wins.
-	if err := os.MkdirAll("save", 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile("save/config.json", []byte(`{"GameWidth":640,"GameHeight":480}`), 0644); err != nil {
-		t.Fatal(err)
-	}
-	libretroOldConfigSize(&cfg)
-	if cfg.Video.GameWidth != 640 || cfg.Video.GameHeight != 480 {
-		t.Errorf("json: got %dx%d", cfg.Video.GameWidth, cfg.Video.GameHeight)
-	}
-}
-
 func TestLibretroFindMotif(t *testing.T) {
 	chdir := func(dir string) {
 		t.Helper()
