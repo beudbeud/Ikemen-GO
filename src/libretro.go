@@ -21,6 +21,7 @@ package main
 import "C"
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -52,7 +53,7 @@ var lr struct {
 	quitting bool
 
 	w, h       int
-	repW, repH int  // last geometry reported to the frontend (retro thread only)
+	repW, repH int     // last geometry reported to the frontend (retro thread only)
 	raw        []uint8 // straight from the GL readback
 	out        []uint8 // XRGB8888, top-down: what the frontend sees
 
@@ -340,6 +341,15 @@ func libretroGameRoot(path string) string {
 			return d
 		}
 	}
+	// A zip often extracts into a subfolder ("Game/Game v2/data"), so look one
+	// level down before giving up.
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			if fi, err := os.Stat(filepath.Join(dir, e.Name(), "data")); err == nil && fi.IsDir() {
+				return filepath.Join(dir, e.Name())
+			}
+		}
+	}
 	return dir
 }
 
@@ -363,9 +373,16 @@ func libretroUseSystemEngine() {
 		return
 	}
 	root := filepath.Join(C.GoString(dir), "ikemen")
-	if fi, err := os.Stat(filepath.Join(root, "external", "script", "main.lua")); err != nil || fi.IsDir() {
-		libretroMessage("Ikemen GO: install data/, external/ and font/ in " + root)
-		return
+	// data/system.def too: a tree with the scripts but not data/ passes the
+	// main.lua check, then fails much later with an opaque motif panic.
+	for _, f := range []string{
+		filepath.Join("external", "script", "main.lua"),
+		filepath.Join("data", "system.def"),
+	} {
+		if fi, err := os.Stat(filepath.Join(root, f)); err != nil || fi.IsDir() {
+			libretroMessage("Ikemen GO: install data/, external/ and font/ in " + root)
+			return
+		}
 	}
 
 	libretroEngineRoot = root
@@ -499,16 +516,38 @@ func libretroRebaseConfig(cfg *Config, root string) {
 	cfg.Config.GamepadMappings = rebase(cfg.Config.GamepadMappings)
 	cfg.Debug.Font = rebase(cfg.Debug.Font)
 
-	// A folder from an older Ikemen keeps its motif path in save/config.json,
-	// which this engine no longer reads, so it ends up with the default one --
-	// pointing into the engine tree, at a motif only the release bundle ships.
-	// data/system.def is where M.U.G.E.N has always put it, so try that before
-	// giving up. Anything with a working config.ini is left alone.
+	// Anything with a working config.ini is left alone; otherwise hunt for the
+	// content's own motif before the default one -- which points into the
+	// engine tree -- wins and loads the wrong screenpack, or panics.
 	if _, err := os.Stat(cfg.Config.Motif); err != nil {
-		if _, err := os.Stat("data/system.def"); err == nil {
-			cfg.Config.Motif = "data/system.def"
+		if m := libretroFindMotif(); m != "" {
+			cfg.Config.Motif = m
+		} else {
+			libretroMessage("Ikemen GO: no system.def found in the game folder")
 		}
 	}
+}
+
+// libretroFindMotif locates the content's screenpack when its config does not:
+// a folder from an older Ikemen keeps the motif path in save/config.json, which
+// this engine no longer reads, and M.U.G.E.N packs keep it at data/system.def
+// or data/<pack>/system.def.
+func libretroFindMotif() string {
+	if b, err := os.ReadFile(filepath.Join("save", "config.json")); err == nil {
+		var c struct{ Motif string }
+		if json.Unmarshal(b, &c) == nil && c.Motif != "" {
+			if p := FileExist(c.Motif); p != "" {
+				return p
+			}
+		}
+	}
+	if p := FileExist("data/system.def"); p != "" { // FileExist: case-insensitive
+		return p
+	}
+	if m, _ := filepath.Glob("data/*/system.def"); len(m) > 0 {
+		return m[0]
+	}
+	return FileExist("system.def")
 }
 
 func libretroMessage(text string) {
