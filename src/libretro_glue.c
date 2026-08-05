@@ -48,10 +48,12 @@ static struct retro_core_option_v2_definition ik_option_defs[] = {
 	{ "ikemen_go_sprite_detail",
 	  "Sprite detail", NULL,
 	  "Resolution of large sprite textures, which on a shared-memory GPU live "
-	  "in system RAM. 'Auto' matches the 'Resolution' option: a 720p pack "
-	  "shown at 480p uploads at half detail (a quarter of the RAM), invisible "
-	  "at that output. Fonts and UI always keep full detail. Applied when "
-	  "content loads.",
+	  "in system RAM. 'Auto' shrinks true-color sprites to match the "
+	  "'Resolution' option -- a 720p pack played at 480p uploads them at half "
+	  "detail, a quarter of the RAM -- but never touches palette-indexed "
+	  "pixel art, which halving visibly ruins and which is cheap anyway. "
+	  "'Half' shrinks everything. Fonts and UI always keep full detail. "
+	  "Applied when content loads.",
 	  NULL, NULL,
 	  { { "Auto", NULL }, { "Full", NULL }, { "Half", NULL }, { NULL, NULL } },
 	  "Auto" },

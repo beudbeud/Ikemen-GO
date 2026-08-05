@@ -45,6 +45,12 @@ var (
 // fit a 4GB board at full size; on a CRT-class output the loss is invisible.
 var libretroSpriteShrink int32
 
+// libretroShrinkIndexed extends the shrink to palette-indexed sprites. Off in
+// "Auto": indexed sprites are pixel art, where halving turns crisp pixels to
+// mush -- and at 1 byte per texel they were never the memory problem. The
+// true-color rips (4 bytes per texel) are, and they downscale invisibly.
+var libretroShrinkIndexed bool
+
 // libretroShrinkSprite returns the sprite bitmap reduced by the configured
 // factor: palette indices by decimation (they cannot be averaged), RGB by box
 // average, RGBA alpha-weighted so transparent texels do not darken edges.
@@ -53,6 +59,9 @@ func libretroShrinkSprite(data []byte, w, h, bpp int32) ([]byte, int32, int32) {
 	n := libretroSpriteShrink
 	if n <= 1 || w*h < 65536 || w < n || h < n ||
 		(bpp != 1 && bpp != 3 && bpp != 4) || int32(len(data)) != w*h*bpp {
+		return data, w, h
+	}
+	if bpp == 1 && !libretroShrinkIndexed {
 		return data, w, h
 	}
 	ow, oh := w/n, h/n
