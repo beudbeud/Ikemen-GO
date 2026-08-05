@@ -149,9 +149,9 @@ func TestLibretroSpriteShrinkFactor(t *testing.T) {
 }
 
 func TestLibretroShrinkSprite(t *testing.T) {
-	old := libretroSpriteShrink
-	t.Cleanup(func() { libretroSpriteShrink = old })
-	libretroSpriteShrink = 2
+	old, oldIdx := libretroSpriteShrink, libretroShrinkIndexed
+	t.Cleanup(func() { libretroSpriteShrink, libretroShrinkIndexed = old, oldIdx })
+	libretroSpriteShrink, libretroShrinkIndexed = 2, true
 
 	// Below the size threshold: untouched.
 	small := []byte{1, 2, 3, 4}
@@ -166,6 +166,12 @@ func TestLibretroShrinkSprite(t *testing.T) {
 	out, ow, oh := libretroShrinkSprite(idx, w, h, 1)
 	if ow != 256 || oh != 256 || out[0] != 7 || out[1] != 9 {
 		t.Errorf("indexed: %dx%d out[0]=%d out[1]=%d", ow, oh, out[0], out[1])
+	}
+
+	// Auto mode spares pixel art: indexed sprites pass through untouched.
+	libretroShrinkIndexed = false
+	if _, w, h := libretroShrinkSprite(idx, 512, 512, 1); w != 512 || h != 512 {
+		t.Errorf("indexed spared: got %dx%d", w, h)
 	}
 
 	// RGBA 512x512: alpha-weighted, so a transparent black texel in the block

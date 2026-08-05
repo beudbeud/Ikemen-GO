@@ -442,6 +442,7 @@ func libretroSpriteDetail() {
 		switch choice {
 		case "Half":
 			libretroSpriteShrink = 2
+			libretroShrinkIndexed = true // explicit: the player accepts soft pixel art
 		case "Full":
 			libretroSpriteShrink = 1
 		default: // Auto
