@@ -128,6 +128,30 @@ func TestLibretroGameRoot(t *testing.T) {
 	}
 }
 
+func TestLibretroSearchOrder(t *testing.T) {
+	old := libretroEngineRoot
+	t.Cleanup(func() { libretroEngineRoot = old })
+
+	libretroEngineRoot = ""
+	if got := libretroSearchOrder("data/system.def"); len(got) != 1 || got[0] != "data/system.def" {
+		t.Errorf("no root: got %v", got)
+	}
+
+	libretroEngineRoot = "/sys/ikemen"
+	rooted := filepath.Join("/sys/ikemen", "data/system.def")
+	if got := libretroSearchOrder("data/system.def"); len(got) != 2 || got[0] != "data/system.def" || got[1] != rooted {
+		t.Errorf("content-first: got %v", got)
+	}
+	scripted := filepath.Join("/sys/ikemen", "external/script/default.lua")
+	if got := libretroSearchOrder("external/script/default.lua"); len(got) != 2 || got[0] != scripted || got[1] != "external/script/default.lua" {
+		t.Errorf("engine-first: got %v", got)
+	}
+	abs := filepath.Join("/abs", "x.def")
+	if got := libretroSearchOrder(abs); len(got) != 1 || got[0] != abs {
+		t.Errorf("absolute: got %v", got)
+	}
+}
+
 func TestLibretroFindMotif(t *testing.T) {
 	chdir := func(dir string) {
 		t.Helper()

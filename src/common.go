@@ -445,16 +445,20 @@ func decodeShiftJIS(input string) string {
 	return string(decodedBytes)
 }
 
+// FileExist resolves filename to an on-disk (or in-zip) path, matching
+// case-insensitively, or "" if it does not exist. A libretro core pointed at a
+// system tree searches that too, in libretroSearchOrder's order.
 func FileExist(filename string) string {
-	filename = filepath.ToSlash(filename)
-	// Engine scripts come from the system tree first when a libretro core was
-	// pointed at one: old packs ship their release's whole script directory,
-	// and the content's copy would win here otherwise.
-	if libretroEngineRoot != "" && !filepath.IsAbs(filename) && libretroEngineFirst(filename) {
-		if p := FileExist(filepath.Join(libretroEngineRoot, filename)); p != "" {
+	for _, cand := range libretroSearchOrder(filepath.ToSlash(filename)) {
+		if p := fileExistLocal(cand); p != "" {
 			return p
 		}
 	}
+	return ""
+}
+
+func fileExistLocal(filename string) string {
+	filename = filepath.ToSlash(filename)
 	isZip, zipFilePath, pathInZip := IsZipPath(filename)
 	if isZip {
 		var actualZipFilePathOnDisk string
@@ -537,12 +541,6 @@ func FileExist(filename string) string {
 		if info != nil && !info.IsDir() {
 			return filepath.ToSlash(m[0])
 		}
-	}
-	// Same fallback as OpenFile: a libretro core may take the engine's own
-	// files (fonts, sounds, motif parts) from the system directory. It lives
-	// here because every SearchFile candidate funnels through this function.
-	if libretroEngineRoot != "" && !filepath.IsAbs(filename) {
-		return FileExist(filepath.Join(libretroEngineRoot, filename))
 	}
 	return ""
 }
@@ -1718,28 +1716,21 @@ func OpenFile(filename string) (io.ReadSeekCloser, error) {
 		return &zipMemFileReader{reader: bytesReader, zipArchive: zr}, nil
 	}
 
-	// Not a zip path, open as a normal file
-	// Engine scripts: system tree first, same rule as FileExist.
-	if libretroEngineRoot != "" && !filepath.IsAbs(filename) && libretroEngineFirst(filename) {
-		if f, err := os.Open(filepath.Join(libretroEngineRoot, filename)); err == nil {
-			return f, nil
+	// Not a zip path, open as a normal file. A libretro core pointed at a
+	// system tree searches that too, in libretroSearchOrder's order -- every
+	// read funnels through here, which is why the logic lives here and not at
+	// the handful of call sites that happen to name an engine file.
+	var firstErr error
+	for _, cand := range libretroSearchOrder(filename) {
+		f, err := os.Open(cand)
+		if err == nil {
+			return f, nil // *os.File implements io.ReadSeekCloser
+		}
+		if cand == filename {
+			firstErr = err // report the content-relative error, not the tree's
 		}
 	}
-	f, err := os.Open(filename)
-	if err != nil {
-		// Last resort: a libretro core may have been told to take the engine's
-		// own files from elsewhere, so that a game folder built for an older
-		// Ikemen contributes only its motif, chars, stages and sound. Every
-		// read goes through here, which is why the fallback lives here and not
-		// at the handful of call sites that happen to name an engine file.
-		if libretroEngineRoot != "" && !filepath.IsAbs(filename) {
-			if f2, err2 := os.Open(filepath.Join(libretroEngineRoot, filename)); err2 == nil {
-				return f2, nil
-			}
-		}
-		return nil, err
-	}
-	return f, nil // *os.File implements io.ReadSeekCloser
+	return nil, firstErr
 }
 
 func LowercaseNoExtension(filename string) string {
