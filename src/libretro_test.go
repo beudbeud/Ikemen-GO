@@ -116,4 +116,61 @@ func TestLibretroGameRoot(t *testing.T) {
 			t.Errorf("libretroGameRoot(%q) = %q, want %q", in, got, root)
 		}
 	}
+
+	// Zip extracted into a subfolder: the real game sits one level down.
+	outer := t.TempDir()
+	nested := filepath.Join(outer, "Game v2")
+	if err := os.MkdirAll(filepath.Join(nested, "data"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if got := libretroGameRoot(outer); got != nested {
+		t.Errorf("nested: libretroGameRoot(%q) = %q, want %q", outer, got, nested)
+	}
+}
+
+func TestLibretroFindMotif(t *testing.T) {
+	chdir := func(dir string) {
+		t.Helper()
+		old, _ := os.Getwd()
+		if err := os.Chdir(dir); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chdir(old) })
+	}
+	write := func(path string, data []byte) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Old Ikemen pack: motif named only by save/config.json.
+	root := t.TempDir()
+	chdir(root)
+	write(filepath.Join(root, "data", "pack", "system.def"), nil)
+	write(filepath.Join(root, "save", "config.json"), []byte(`{"Motif":"data/pack/system.def"}`))
+	if got := libretroFindMotif(); got != "data/pack/system.def" {
+		t.Errorf("config.json: got %q", got)
+	}
+
+	// No config: the subfolder glob finds it.
+	os.Remove(filepath.Join(root, "save", "config.json"))
+	if got := libretroFindMotif(); got != filepath.ToSlash(filepath.Join("data", "pack", "system.def")) {
+		t.Errorf("glob: got %q", got)
+	}
+
+	// M.U.G.E.N default spot wins over subfolders.
+	write(filepath.Join(root, "data", "system.def"), nil)
+	if got := libretroFindMotif(); got != "data/system.def" {
+		t.Errorf("data/system.def: got %q", got)
+	}
+
+	// Nothing anywhere.
+	chdir(t.TempDir())
+	if got := libretroFindMotif(); got != "" {
+		t.Errorf("empty: got %q", got)
+	}
 }
