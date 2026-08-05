@@ -507,6 +507,8 @@ func libretroForceResolution() {
 		w, h = 320, 240
 	case "640x480 (4:3)":
 		w, h = 640, 480
+	case "720x480 (3:2)":
+		w, h = 720, 480
 	case "854x480 (16:9)":
 		w, h = 854, 480
 	case "1280x720 (16:9)":
