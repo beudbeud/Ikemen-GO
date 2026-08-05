@@ -530,6 +530,12 @@ func FileExist(filename string) string {
 			return filepath.ToSlash(m[0])
 		}
 	}
+	// Same fallback as OpenFile: a libretro core may take the engine's own
+	// files (fonts, sounds, motif parts) from the system directory. It lives
+	// here because every SearchFile candidate funnels through this function.
+	if libretroEngineRoot != "" && !filepath.IsAbs(filename) {
+		return FileExist(filepath.Join(libretroEngineRoot, filename))
+	}
 	return ""
 }
 
