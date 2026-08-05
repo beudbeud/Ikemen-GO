@@ -20,10 +20,11 @@ static struct retro_core_option_v2_definition ik_option_defs[] = {
 	  "Engine files", NULL,
 	  "Where the engine's own data/, external/ and font/ come from. 'System "
 	  "directory' reads them from <system>/ikemen, so packs built for older "
-	  "engine releases run on this core's scripts. Applied when content loads.",
+	  "engine releases run on this core's scripts; without that tree installed "
+	  "it falls back to the content folder. Applied when content loads.",
 	  NULL, NULL,
-	  { { "Content folder", NULL }, { "System directory", NULL }, { NULL, NULL } },
-	  "Content folder" },
+	  { { "System directory", NULL }, { "Content folder", NULL }, { NULL, NULL } },
+	  "System directory" },
 	{ "ikemen_go_resolution",
 	  "Resolution", NULL,
 	  "Run the game at this resolution, the way editing GameWidth/GameHeight "
@@ -67,7 +68,7 @@ static struct retro_core_options_v2 ik_options_v2 = {
 
 static const struct retro_variable ik_options[] = {
 	{ "ikemen_go_engine_files",
-	  "Engine files; Content folder|System directory" },
+	  "Engine files; System directory|Content folder" },
 	{ "ikemen_go_resolution",
 	  "Resolution; Content config|320x240 (4:3)|640x480 (4:3)|854x480 (16:9)|1280x720 (16:9)" },
 	{ "ikemen_go_renderer",
