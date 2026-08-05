@@ -465,5 +465,13 @@ func (c *Config) SetValueUpdate(query string, value interface{}) error {
 
 // Save writes the current IniFile to disk, preserving comments and syntax.
 func (c *Config) Save(file string) error {
+	// A libretro core never writes the content's config back: the file is the
+	// pack's identity (what resolution its assets were authored for), and the
+	// core's own overrides -- forced resolution, input, common lists -- must
+	// not leak into it and poison every later launch. Settings live in the
+	// frontend's core options instead.
+	if libretroPresent != nil {
+		return nil
+	}
 	return SaveINI(c.IniFile, file)
 }
