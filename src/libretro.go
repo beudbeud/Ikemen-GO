@@ -400,11 +400,23 @@ func libretroUseSystemEngine() {
 	// LUA_PATH. The trailing ";;" keeps the default, so the content folder
 	// still answers for anything the engine tree does not carry.
 	os.Setenv("LUA_PATH", filepath.Join(root, "?.lua")+";;")
-	libretroConfigOverride = func(cfg *Config) { libretroRebaseConfig(cfg, root) }
+	libretroOverrideConfig(func(cfg *Config) { libretroRebaseConfig(cfg, root) })
 }
 
 var libretroOptionKeys = []string{
 	"ikemen_go_engine_files", "ikemen_go_resolution", "ikemen_go_renderer",
+}
+
+// libretroOverrideConfig appends f to the chain run on the config the moment
+// it is read, after whatever was registered before it.
+func libretroOverrideConfig(f func(*Config)) {
+	prev := libretroConfigOverride
+	libretroConfigOverride = func(cfg *Config) {
+		if prev != nil {
+			prev(cfg)
+		}
+		f(cfg)
+	}
 }
 
 // libretroForceInput replaces the content's [Keys_*] and [Joystick_*] sections
@@ -413,11 +425,7 @@ var libretroOptionKeys = []string{
 // old numeric format whose duplicate keys break parsing -- a pack must not be
 // able to take the pads down with it.
 func libretroForceInput() {
-	prev := libretroConfigOverride
-	libretroConfigOverride = func(cfg *Config) {
-		if prev != nil {
-			prev(cfg)
-		}
+	libretroOverrideConfig(func(cfg *Config) {
 		kb := []KeysProperties{
 			{Up: "UP", Down: "DOWN", Left: "LEFT", Right: "RIGHT",
 				A: "z", B: "x", C: "c", X: "a", Y: "s", Z: "d",
@@ -446,7 +454,7 @@ func libretroForceInput() {
 				Start: "START", D: "LB", W: "LT", Menu: "BACK",
 			}
 		}
-	}
+	})
 }
 
 // libretroForceRenderer honours the "Renderer" core option: override the
@@ -455,13 +463,7 @@ func libretroForceInput() {
 func libretroForceRenderer() {
 	switch v := libretroVariable("ikemen_go_renderer"); v {
 	case "OpenGL 3.3", "Vulkan 1.3":
-		prev := libretroConfigOverride
-		libretroConfigOverride = func(cfg *Config) {
-			if prev != nil {
-				prev(cfg)
-			}
-			cfg.Video.RenderMode = v
-		}
+		libretroOverrideConfig(func(cfg *Config) { cfg.Video.RenderMode = v })
 	}
 }
 
@@ -516,15 +518,11 @@ func libretroForceResolution() {
 	if _, _, ok := libretroResolutionSize(choice, 0, 0); !ok {
 		return // "Content config"
 	}
-	prev := libretroConfigOverride
-	libretroConfigOverride = func(cfg *Config) {
-		if prev != nil {
-			prev(cfg)
-		}
+	libretroOverrideConfig(func(cfg *Config) {
 		w, h, _ := libretroResolutionSize(choice, cfg.Video.GameWidth, cfg.Video.GameHeight)
 		cfg.Video.WindowWidth, cfg.Video.WindowHeight = w, h
 		cfg.Video.Fullscreen = false // the chosen size must win over the content's
-	}
+	})
 }
 
 // libretroRebasePath repoints an engine-owned relative path at root -- but

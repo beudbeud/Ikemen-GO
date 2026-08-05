@@ -47,3 +47,18 @@ var (
 func libretroEngineFirst(p string) bool {
 	return strings.HasPrefix(strings.ToLower(filepath.ToSlash(p)), "external/script/")
 }
+
+// libretroSearchOrder is the one place that decides where a relative path is
+// looked up: the system tree first for engine scripts, last for everything
+// else. Without a system tree (standalone build, or the core option off) it is
+// just the path itself.
+func libretroSearchOrder(p string) []string {
+	if libretroEngineRoot == "" || filepath.IsAbs(p) {
+		return []string{p}
+	}
+	rooted := filepath.Join(libretroEngineRoot, p)
+	if libretroEngineFirst(p) {
+		return []string{rooted, p}
+	}
+	return []string{p, rooted}
+}
