@@ -185,6 +185,7 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	libretroPads = MaxPlayerNo
 	lr.started = true
 
+	bootStart := time.Now()
 	go func() {
 		runtime.LockOSThread()
 		realMain()
@@ -193,6 +194,8 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	// Block until the engine has a window, a GL context and a first frame, so
 	// retro_get_system_av_info reports the real geometry and sample rate.
 	<-lr.ready
+	fmt.Fprintf(os.Stderr, "Ikemen GO: boot to first frame in %dms\n",
+		time.Since(bootStart).Milliseconds())
 	return C.bool(!lr.quitting)
 }
 

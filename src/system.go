@@ -5977,6 +5977,7 @@ func (l *Loader) loadCharacter(pn int, attached bool) int {
 		}
 
 		// Compile character states
+		compileStart := time.Now()
 		if sys.cgi[pn].states, l.err = newCharCompiler().Compile(p.playerNo, cdef, p.gi().constants); l.err != nil {
 			sys.chars[pn] = nil
 			if attached {
@@ -5985,6 +5986,9 @@ func (l *Loader) loadCharacter(pn int, attached bool) int {
 				tstr = fmt.Sprintf("WARNING: Failed to compile new char states: %v", cdef)
 			}
 			return -1
+		}
+		if d := time.Since(compileStart); d > 100*time.Millisecond {
+			fmt.Fprintf(os.Stderr, "Ikemen GO: states %s compiled in %dms\n", cdef, d.Milliseconds())
 		}
 	}
 

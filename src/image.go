@@ -11,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 	"unsafe"
 )
 
@@ -1507,6 +1508,16 @@ func loadSff(filename string, char bool, isMainThread bool, isActPal bool) (*Sff
 
 	s := newSff()
 	s.filename = filename
+
+	// Where fight-load time actually goes is invisible without this; a Pi
+	// spends seconds here and the log tells whether a cache would pay off.
+	start := time.Now()
+	defer func() {
+		if d := time.Since(start); d > 100*time.Millisecond {
+			fmt.Fprintf(os.Stderr, "Ikemen GO: sff %s: %d sprites in %dms\n",
+				filename, s.header.NumberOfSprites, d.Milliseconds())
+		}
+	}()
 
 	f, err := OpenFile(filename)
 	if err != nil {
