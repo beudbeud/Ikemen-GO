@@ -147,6 +147,7 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 			return C.bool(false)
 		}
 	}
+	libretroForceInput()
 	libretroForceResolution()
 	libretroForceRenderer()
 	lr.applied = make(map[string]string, len(libretroOptionKeys))
@@ -404,6 +405,48 @@ func libretroUseSystemEngine() {
 
 var libretroOptionKeys = []string{
 	"ikemen_go_engine_files", "ikemen_go_resolution", "ikemen_go_renderer",
+}
+
+// libretroForceInput replaces the content's [Keys_*] and [Joystick_*] sections
+// with the engine defaults. The frontend owns the physical mapping (RetroPad ->
+// SDL names is fixed in libretroPadMap), and packs ship input sections in the
+// old numeric format whose duplicate keys break parsing -- a pack must not be
+// able to take the pads down with it.
+func libretroForceInput() {
+	prev := libretroConfigOverride
+	libretroConfigOverride = func(cfg *Config) {
+		if prev != nil {
+			prev(cfg)
+		}
+		kb := []KeysProperties{
+			{Up: "UP", Down: "DOWN", Left: "LEFT", Right: "RIGHT",
+				A: "z", B: "x", C: "c", X: "a", Y: "s", Z: "d",
+				Start: "RETURN", D: "q", W: "w"},
+			{Up: "i", Down: "k", Left: "j", Right: "l",
+				A: "f", B: "g", C: "h", X: "r", Y: "t", Z: "y",
+				Start: "RSHIFT", D: "LBRACKET", W: "RBRACKET"},
+		}
+		cfg.Keys = make(map[string]*KeysProperties, MaxPlayerNo)
+		cfg.Joystick = make(map[string]*KeysProperties, MaxPlayerNo)
+		for i := 1; i <= MaxPlayerNo; i++ {
+			k := KeysProperties{Joystick: -1, Up: "Not used", Down: "Not used",
+				Left: "Not used", Right: "Not used", A: "Not used", B: "Not used",
+				C: "Not used", X: "Not used", Y: "Not used", Z: "Not used",
+				Start: "Not used", D: "Not used", W: "Not used", Menu: "Not used"}
+			if i <= len(kb) {
+				k = kb[i-1]
+				k.Joystick = -1
+				k.Menu = "Not used"
+			}
+			cfg.Keys[fmt.Sprintf("keys_p%d", i)] = &k
+			cfg.Joystick[fmt.Sprintf("joystick_p%d", i)] = &KeysProperties{
+				Joystick: i - 1,
+				Up:       "DP_U", Down: "DP_D", Left: "DP_L", Right: "DP_R",
+				A: "A", B: "B", C: "RT", X: "X", Y: "Y", Z: "RB",
+				Start: "START", D: "LB", W: "LT", Menu: "BACK",
+			}
+		}
+	}
 }
 
 // libretroForceRenderer honours the "Renderer" core option: override the
