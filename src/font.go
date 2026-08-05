@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
 	"os"
 	"regexp"
@@ -137,7 +138,15 @@ func stripKernTable(ttf []byte) []byte {
 	return out
 }
 
-func loadFnt(filename string, height int32) (*Fnt, error) {
+func loadFnt(filename string, height int32) (f *Fnt, err error) {
+	// LoadFntSff and loadSff report a missing or broken sprite file by
+	// panicking; one bad font in a motif must not take down the engine, so
+	// turn it into the error the callers already log and recover from.
+	defer func() {
+		if r := recover(); r != nil {
+			f, err = nil, Error(fmt.Sprint(r))
+		}
+	}()
 	if HasExtension(filename, ".fnt") {
 		return loadFntV1(filename)
 	}
