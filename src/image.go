@@ -776,15 +776,17 @@ func (s *Sprite) SetPxl(px []byte) {
 	if int64(len(px)) != int64(s.Size[0])*int64(s.Size[1]) {
 		return
 	}
+	px, w, h := libretroShrinkSprite(px, int32(s.Size[0]), int32(s.Size[1]), 1)
 	sys.mainThreadTask <- func() {
-		s.Tex = gfx.newTexture(int32(s.Size[0]), int32(s.Size[1]), 8, false)
+		s.Tex = gfx.newTexture(w, h, 8, false)
 		s.Tex.SetData(px)
 	}
 }
 
 func (s *Sprite) SetRaw(data []byte, sprWidth int32, sprHeight int32, sprDepth int32) {
+	data, w, h := libretroShrinkSprite(data, sprWidth, sprHeight, sprDepth/8)
 	sys.mainThreadTask <- func() {
-		s.Tex = gfx.newTexture(sprWidth, sprHeight, sprDepth, sys.cfg.Video.RGBSpriteBilinearFilter)
+		s.Tex = gfx.newTexture(w, h, sprDepth, sys.cfg.Video.RGBSpriteBilinearFilter)
 		s.Tex.SetData(data)
 	}
 }

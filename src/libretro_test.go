@@ -154,6 +154,43 @@ func TestLibretroSearchOrder(t *testing.T) {
 	}
 }
 
+func TestLibretroShrinkSprite(t *testing.T) {
+	old := libretroSpriteShrink
+	t.Cleanup(func() { libretroSpriteShrink = old })
+	libretroSpriteShrink = 2
+
+	// Below the size threshold: untouched.
+	small := []byte{1, 2, 3, 4}
+	if out, w, h := libretroShrinkSprite(small, 2, 2, 1); w != 2 || h != 2 || &out[0] != &small[0] {
+		t.Errorf("small: got %dx%d", w, h)
+	}
+
+	// Indexed 512x512: decimated to 256x256, top-left texel of each block kept.
+	w, h := int32(512), int32(512)
+	idx := make([]byte, w*h)
+	idx[0], idx[2] = 7, 9 // texels (0,0) and (2,0)
+	out, ow, oh := libretroShrinkSprite(idx, w, h, 1)
+	if ow != 256 || oh != 256 || out[0] != 7 || out[1] != 9 {
+		t.Errorf("indexed: %dx%d out[0]=%d out[1]=%d", ow, oh, out[0], out[1])
+	}
+
+	// RGBA 512x512: alpha-weighted, so a transparent black texel in the block
+	// does not darken the opaque red one.
+	rgba := make([]byte, w*h*4)
+	set := func(x, y int32, r, g, b, a byte) {
+		i := (y*w + x) * 4
+		rgba[i], rgba[i+1], rgba[i+2], rgba[i+3] = r, g, b, a
+	}
+	set(0, 0, 255, 0, 0, 255) // opaque red; the 3 other texels transparent black
+	out, ow, oh = libretroShrinkSprite(rgba, w, h, 4)
+	if ow != 256 || oh != 256 {
+		t.Fatalf("rgba: got %dx%d", ow, oh)
+	}
+	if out[0] != 255 || out[3] != 63 {
+		t.Errorf("rgba: got r=%d a=%d, want r=255 a=63", out[0], out[3])
+	}
+}
+
 func TestLibretroDefaultCommon(t *testing.T) {
 	defaults, err := ini.Load([]byte(
 		"[Common]\nStates = a.zss, b.zss\nFx = data/gofx/gofx.def\nModules = \nLua = loop()\n"))

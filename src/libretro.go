@@ -150,6 +150,9 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	libretroForceInput()
 	libretroForceResolution()
 	libretroForceRenderer()
+	if libretroVariable("ikemen_go_sprite_detail") == "Half" {
+		libretroSpriteShrink = 2
+	}
 	lr.applied = make(map[string]string, len(libretroOptionKeys))
 	for _, k := range libretroOptionKeys {
 		lr.applied[k] = libretroVariable(k)
@@ -405,6 +408,7 @@ func libretroUseSystemEngine() {
 
 var libretroOptionKeys = []string{
 	"ikemen_go_engine_files", "ikemen_go_resolution", "ikemen_go_renderer",
+	"ikemen_go_sprite_detail",
 }
 
 // libretroOverrideConfig appends f to the chain run on the config the moment
