@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"gopkg.in/ini.v1"
 )
 
 func TestLibretroConvertFrame(t *testing.T) {
@@ -149,6 +151,33 @@ func TestLibretroSearchOrder(t *testing.T) {
 	abs := filepath.Join("/abs", "x.def")
 	if got := libretroSearchOrder(abs); len(got) != 1 || got[0] != abs {
 		t.Errorf("absolute: got %v", got)
+	}
+}
+
+func TestLibretroDefaultCommon(t *testing.T) {
+	defaults, err := ini.Load([]byte(
+		"[Common]\nStates = a.zss, b.zss\nFx = data/gofx/gofx.def\nModules = \nLua = loop()\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg Config
+	cfg.DefaultOnlyIni = defaults
+	cfg.Common.States = map[string][]string{"States": {"data/old.zss"}}
+	cfg.Common.Fx = map[string][]string{"Fx": {"data/inputdisplay.def"}}
+
+	libretroDefaultCommon(&cfg)
+
+	if got := cfg.Common.States["States"]; len(got) != 2 || got[0] != "a.zss" || got[1] != "b.zss" {
+		t.Errorf("States: got %v", got)
+	}
+	if got := cfg.Common.Fx["Fx"]; len(got) != 1 || got[0] != "data/gofx/gofx.def" {
+		t.Errorf("Fx: got %v", got)
+	}
+	if got := cfg.Common.Modules; len(got["Modules"]) != 0 {
+		t.Errorf("Modules: got %v", got)
+	}
+	if got := cfg.Common.Lua["Lua"]; len(got) != 1 || got[0] != "loop()" {
+		t.Errorf("Lua: got %v", got)
 	}
 }
 
