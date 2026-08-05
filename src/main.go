@@ -356,14 +356,18 @@ func handlePanic(r interface{}) {
 	version := fmt.Sprintf("Version: %s", Version)
 	buildTime := fmt.Sprintf("Build Time: %s", BuildTime)
 	platform := fmt.Sprintf("Platform: %s (%s)", runtime.GOOS, runtime.GOARCH)
-	render := gfx.GetName()
+	// gfx is nil until selectRenderer has run; a panic before that (bad config,
+	// missing engine files) must not turn into a SIGSEGV here.
+	render := "not initialized"
+	rendererDebug := ""
+	if gfx != nil {
+		render = gfx.GetName()
+		rendererDebug = gfx.DebugInfo()
+	}
 
 	// Prepare stats
 	memory := fmt.Sprintf("RAM in Use: %v MB / OS Reserved: %v MB", mem.Alloc/1024/1024, mem.Sys/1024/1024)
 	threads := fmt.Sprintf("Active Goroutines: %d", runtime.NumGoroutine())
-
-	// Renderer debug info (GPU memory stats, etc.)
-	rendererDebug := gfx.DebugInfo()
 
 	// Identify the crash type
 	crashType := "Fatal runtime error" // Default for unsafe crashes

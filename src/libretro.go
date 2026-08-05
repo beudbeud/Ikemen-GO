@@ -139,6 +139,14 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	}
 
 	libretroUseSystemEngine()
+	// No engine scripts in the content and no system tree to fall back on:
+	// realMain could only panic. Fail the load with a message instead.
+	if libretroEngineRoot == "" {
+		if _, err := os.Stat(filepath.Join("external", "script", "main.lua")); err != nil {
+			libretroMessage("Ikemen GO: no engine files in the game folder or the system directory")
+			return C.bool(false)
+		}
+	}
 	libretroForceResolution()
 	libretroForceRenderer()
 	lr.applied = make(map[string]string, len(libretroOptionKeys))
@@ -373,14 +381,15 @@ func libretroUseSystemEngine() {
 		return
 	}
 	root := filepath.Join(C.GoString(dir), "ikemen")
-	// data/system.def too: a tree with the scripts but not data/ passes the
-	// main.lua check, then fails much later with an opaque motif panic.
+	// The default motif too: a tree with the scripts but without the release
+	// screenpack (data/ikemen1/, per defaultConfig.ini) passes the main.lua
+	// check, then fails much later with an opaque motif panic.
 	for _, f := range []string{
 		filepath.Join("external", "script", "main.lua"),
-		filepath.Join("data", "system.def"),
+		filepath.Join("data", "ikemen1", "system.def"),
 	} {
 		if fi, err := os.Stat(filepath.Join(root, f)); err != nil || fi.IsDir() {
-			libretroMessage("Ikemen GO: install data/, external/ and font/ in " + root)
+			libretroMessage("Ikemen GO: install the release data/, external/ and font/ in " + root)
 			return
 		}
 	}
