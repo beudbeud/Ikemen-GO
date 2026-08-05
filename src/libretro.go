@@ -148,6 +148,7 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	}
 	libretroForceInput()
 	libretroForceResolution() // before sprite detail: it reads the game size
+	libretroForceFightAspect()
 	libretroForceRenderer()
 	libretroSpriteDetail()
 	lr.applied = make(map[string]string, len(libretroOptionKeys))
@@ -411,7 +412,7 @@ func libretroUseSystemEngine() {
 
 var libretroOptionKeys = []string{
 	"ikemen_go_engine_files", "ikemen_go_resolution", "ikemen_go_renderer",
-	"ikemen_go_sprite_detail",
+	"ikemen_go_sprite_detail", "ikemen_go_fight_aspect",
 }
 
 // libretroOverrideConfig appends f to the chain run on the config the moment
@@ -531,6 +532,28 @@ func libretroForceResolution() {
 		// sysSet() snapshotted these from the config before this override ran,
 		// and the window and logical resolution are built from the snapshot.
 		sys.gameWidth, sys.gameHeight = float32(w), float32(h)
+	})
+}
+
+// libretroForceFightAspect honours the "Fight aspect" core option: the
+// engine's FightAspectWidth/Height, which decide the framing of matches
+// only -- menus always follow the game resolution. The engine default (-1)
+// follows each stage's own localcoord, which is why a pack mixing 4:3 and
+// widescreen stages changes shape between fights.
+func libretroForceFightAspect() {
+	var w, h int32
+	switch libretroVariable("ikemen_go_fight_aspect") {
+	case "Stage":
+		w, h = -1, -1
+	case "4:3":
+		w, h = 4, 3
+	case "16:9":
+		w, h = 16, 9
+	default:
+		return // "Content config"
+	}
+	libretroOverrideConfig(func(cfg *Config) {
+		cfg.Video.FightAspectWidth, cfg.Video.FightAspectHeight = w, h
 	})
 }
 
