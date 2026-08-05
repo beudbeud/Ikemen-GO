@@ -3997,7 +3997,12 @@ for _, v in ipairs(t_modules) do
 	print('Loading module: ' .. v)
 	v = v:gsub('^%s*[%./\\]*', '')
 	v = v:gsub('%.[^%.]+$', '')
-	require(v:gsub('[/\\]+', '.'))
+	-- A module written for another engine version must not take down the boot:
+	-- game folders commonly ship the stock mods of the release they were built on.
+	local ok, err = pcall(require, v:gsub('[/\\]+', '.'))
+	if not ok then
+		print('Failed to load module ' .. v .. ': ' .. tostring(err))
+	end
 end
 
 main.f_unlock(false)
