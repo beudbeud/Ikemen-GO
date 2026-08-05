@@ -46,6 +46,16 @@ static struct retro_core_option_v2_definition ik_option_defs[] = {
 	  { { "Content config", NULL }, { "OpenGL 3.3", NULL },
 	    { "Vulkan 1.3", NULL }, { NULL, NULL } },
 	  "Content config" },
+	{ "ikemen_go_fight_aspect",
+	  "Fight aspect", NULL,
+	  "Aspect ratio of matches. 'Stage' follows each stage's own design, so a "
+	  "pack mixing 4:3 and widescreen stages changes shape between fights; a "
+	  "fixed value keeps every fight framed the same. Menus always follow the "
+	  "game resolution. Applied when content loads.",
+	  NULL, NULL,
+	  { { "Content config", NULL }, { "Stage", NULL }, { "4:3", NULL },
+	    { "16:9", NULL }, { NULL, NULL } },
+	  "Content config" },
 	{ "ikemen_go_sprite_detail",
 	  "Sprite detail", NULL,
 	  "Resolution of large sprite textures, which on a shared-memory GPU live "
@@ -76,6 +86,8 @@ static const struct retro_variable ik_options[] = {
 	  "Resolution; Content config|320x240 (4:3)|640x480 (4:3)|720x480 (3:2)|854x480 (16:9)|1280x720 (16:9)" },
 	{ "ikemen_go_renderer",
 	  "Renderer; Content config|OpenGL 3.3|Vulkan 1.3" },
+	{ "ikemen_go_fight_aspect",
+	  "Fight aspect; Content config|Stage|4:3|16:9" },
 	{ "ikemen_go_sprite_detail",
 	  "Sprite detail; Auto|Full|Half" },
 	{ NULL, NULL }
