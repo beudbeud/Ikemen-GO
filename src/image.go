@@ -779,17 +779,21 @@ func (s *Sprite) SetPxl(px []byte) {
 	}
 	px, w, h := libretroShrinkSprite(px, int32(s.Size[0]), int32(s.Size[1]), 1)
 	sffCaptureAdd(s, px, w, h, 8)
-	sys.mainThreadTask <- func() {
-		s.Tex = gfx.newTexture(w, h, 8, false)
-		s.Tex.SetData(px)
-	}
+	s.uploadTexture(px, w, h, 8, false)
 }
 
 func (s *Sprite) SetRaw(data []byte, sprWidth int32, sprHeight int32, sprDepth int32) {
 	data, w, h := libretroShrinkSprite(data, sprWidth, sprHeight, sprDepth/8)
 	sffCaptureAdd(s, data, w, h, sprDepth)
+	s.uploadTexture(data, w, h, sprDepth, sys.cfg.Video.RGBSpriteBilinearFilter)
+}
+
+// uploadTexture queues the GPU upload of a sprite bitmap on the main thread,
+// which owns the GL context. mainThreadTask is buffered deep enough (64k) that
+// a whole sff's uploads fit without the queuing thread having to drain.
+func (s *Sprite) uploadTexture(data []byte, w, h, depth int32, filter bool) {
 	sys.mainThreadTask <- func() {
-		s.Tex = gfx.newTexture(w, h, sprDepth, sys.cfg.Video.RGBSpriteBilinearFilter)
+		s.Tex = gfx.newTexture(w, h, depth, filter)
 		s.Tex.SetData(data)
 	}
 }
