@@ -55,28 +55,6 @@ func TestLibretroFlipRows(t *testing.T) {
 	}
 }
 
-func TestLibretroResolutionSize(t *testing.T) {
-	for _, c := range []struct {
-		value  string
-		gw, gh int32
-		w, h   int
-		ok     bool
-	}{
-		{"240p", 320, 240, 320, 240, true},
-		{"480p", 640, 480, 640, 480, true},
-		{"480p", 1280, 720, 854, 480, true}, // widescreen pack, width rounded even
-		{"720p", 1280, 720, 1280, 720, true},
-		{"1080p", 0, 0, 1440, 1080, true}, // no game size yet: assume 4:3
-		{"Content config", 640, 480, 0, 0, false},
-	} {
-		w, h, ok := libretroResolutionSize(c.value, c.gw, c.gh)
-		if w != c.w || h != c.h || ok != c.ok {
-			t.Errorf("libretroResolutionSize(%q, %d, %d) = %d, %d, %v; want %d, %d, %v",
-				c.value, c.gw, c.gh, w, h, ok, c.w, c.h, c.ok)
-		}
-	}
-}
-
 func TestLibretroRebasePath(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "data"), 0755); err != nil {
