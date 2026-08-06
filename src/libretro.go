@@ -168,6 +168,7 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	libretroForceResolution() // before sprite detail: it reads the game size
 	libretroForceFightAspect()
 	libretroForceRenderer()
+	libretroForceDebug()
 	libretroRAMSaver()
 	libretroForceRGBFilter()
 	libretroForceGameplay()
@@ -435,7 +436,7 @@ var libretroOptionKeys = []string{
 	"ikemen_go_engine_files", "ikemen_go_resolution", "ikemen_go_renderer",
 	"ikemen_go_sprite_detail", "ikemen_go_fight_aspect", "ikemen_go_ram_saver",
 	"ikemen_go_rgb_filter", "ikemen_go_difficulty", "ikemen_go_round_time",
-	"ikemen_go_rounds_win",
+	"ikemen_go_rounds_win", "ikemen_go_debug",
 }
 
 // libretroOverrideConfig appends f to the chain run on the config the moment
@@ -588,6 +589,21 @@ func libretroForceRenderer() {
 	case "OpenGL 3.3", "Vulkan 1.3":
 		libretroOverrideConfig(func(cfg *Config) { cfg.Video.RenderMode = v })
 	}
+}
+
+// libretroForceDebug honours "Debug keys". The engine default -- and so most
+// packs -- ships AllowDebugMode/Keys enabled, and the core forwards F1..F11,
+// Ctrl and Shift from any plugged keyboard: one stray F1 kills a fighter
+// mid-round. "On" leaves the pack's own settings alone, for pack authors
+// testing under the core.
+func libretroForceDebug() {
+	if libretroVariable("ikemen_go_debug") == "On" {
+		return
+	}
+	libretroOverrideConfig(func(cfg *Config) {
+		cfg.Debug.AllowDebugMode = false
+		cfg.Debug.AllowDebugKeys = false
+	})
 }
 
 // libretroRAMSaver caps the engine limits that dominate memory on small
