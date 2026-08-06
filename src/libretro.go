@@ -146,6 +146,11 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 			return C.bool(false)
 		}
 	}
+	// Presentation belongs to the frontend. KeepAspect still runs inside the
+	// core (it letterboxes the final blit when the fight aspect differs from
+	// the game resolution); a pack shipping false would stretch those frames,
+	// and stretching is RetroArch's call to make.
+	libretroOverrideConfig(func(cfg *Config) { cfg.Video.KeepAspect = true })
 	libretroForceInput()
 	libretroForceResolution() // before sprite detail: it reads the game size
 	libretroForceFightAspect()
