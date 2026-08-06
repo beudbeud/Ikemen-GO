@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -155,6 +156,9 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	libretroForceResolution() // before sprite detail: it reads the game size
 	libretroForceFightAspect()
 	libretroForceRenderer()
+	libretroRAMSaver()
+	libretroForceRGBFilter()
+	libretroForceGameplay()
 	libretroSpriteDetail()
 	lr.applied = make(map[string]string, len(libretroOptionKeys))
 	for _, k := range libretroOptionKeys {
@@ -417,7 +421,9 @@ func libretroUseSystemEngine() {
 
 var libretroOptionKeys = []string{
 	"ikemen_go_engine_files", "ikemen_go_resolution", "ikemen_go_renderer",
-	"ikemen_go_sprite_detail", "ikemen_go_fight_aspect",
+	"ikemen_go_sprite_detail", "ikemen_go_fight_aspect", "ikemen_go_ram_saver",
+	"ikemen_go_rgb_filter", "ikemen_go_difficulty", "ikemen_go_round_time",
+	"ikemen_go_rounds_win",
 }
 
 // libretroOverrideConfig appends f to the chain run on the config the moment
@@ -569,6 +575,52 @@ func libretroForceRenderer() {
 	switch v := libretroVariable("ikemen_go_renderer"); v {
 	case "OpenGL 3.3", "Vulkan 1.3":
 		libretroOverrideConfig(func(cfg *Config) { cfg.Video.RenderMode = v })
+	}
+}
+
+// libretroRAMSaver caps the engine limits that dominate memory on small
+// boards. Min() keeps a pack that already asks for less than the cap.
+func libretroRAMSaver() {
+	if libretroVariable("ikemen_go_ram_saver") != "On" {
+		return
+	}
+	libretroOverrideConfig(func(cfg *Config) {
+		cfg.Config.Players = Min(cfg.Config.Players, 2)
+		cfg.Config.AfterImageMax = Min(cfg.Config.AfterImageMax, 32)
+		cfg.Config.ExplodMax = Min(cfg.Config.ExplodMax, 128)
+		cfg.Config.ProjectileMax = Min(cfg.Config.ProjectileMax, 64)
+		cfg.Video.EnableModelShadow = false
+		cfg.Sound.WavChannels = Min(cfg.Sound.WavChannels, 16)
+	})
+}
+
+// libretroForceRGBFilter honours "Smooth true-color sprites". Only the upload
+// filter changes, so the SFF disk cache stays valid across a toggle.
+func libretroForceRGBFilter() {
+	switch v := libretroVariable("ikemen_go_rgb_filter"); v {
+	case "On", "Off":
+		on := v == "On"
+		libretroOverrideConfig(func(cfg *Config) { cfg.Video.RGBSpriteBilinearFilter = on })
+	}
+}
+
+// libretroForceGameplay honours the Gameplay category: match settings a
+// pack's own options menu would set, exposed here because those menus are
+// not always usable (broken fonts, layouts authored for another engine).
+func libretroForceGameplay() {
+	if n, err := strconv.Atoi(libretroVariable("ikemen_go_difficulty")); err == nil {
+		libretroOverrideConfig(func(cfg *Config) { cfg.Options.Difficulty = n })
+	}
+	switch v := libretroVariable("ikemen_go_round_time"); v {
+	case "None":
+		libretroOverrideConfig(func(cfg *Config) { cfg.Options.Time = -1 })
+	default:
+		if n, err := strconv.Atoi(v); err == nil {
+			libretroOverrideConfig(func(cfg *Config) { cfg.Options.Time = int32(n) })
+		}
+	}
+	if n, err := strconv.Atoi(libretroVariable("ikemen_go_rounds_win")); err == nil {
+		libretroOverrideConfig(func(cfg *Config) { cfg.Options.Match.Wins = int32(n) })
 	}
 }
 

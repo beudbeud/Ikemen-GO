@@ -17,47 +17,56 @@ static retro_input_state_t        input_state_cb;
  * fallback for frontends predating options v2. Keep both in sync. */
 static struct retro_core_option_v2_definition ik_option_defs[] = {
 	{ "ikemen_go_engine_files",
-	  "Engine files", NULL,
+	  "System > Engine files", "Engine files",
 	  "Where the engine's own data/, external/ and font/ come from. 'System "
 	  "directory' reads them from <system>/ikemen, so packs built for older "
 	  "engine releases run on this core's scripts; without that tree installed "
 	  "it falls back to the content folder. Applied when content loads.",
-	  NULL, NULL,
+	  NULL, "system",
 	  { { "System directory", NULL }, { "Content folder", NULL }, { NULL, NULL } },
 	  "System directory" },
+	{ "ikemen_go_renderer",
+	  "System > Renderer", "Renderer",
+	  "Override the content's RenderMode, for packs whose config asks for a "
+	  "renderer this machine does not have. The GL ES core has a single "
+	  "renderer and ignores this. Applied when content loads.",
+	  NULL, "system",
+	  { { "Content config", NULL }, { "OpenGL 3.3", NULL },
+	    { "Vulkan 1.3", NULL }, { NULL, NULL } },
+	  "Content config" },
+	{ "ikemen_go_ram_saver",
+	  "System > RAM saver", "RAM saver",
+	  "Cap the engine limits that dominate memory on small boards: 2 players "
+	  "at once, 3D model shadows off, fewer afterimages, explods, projectiles "
+	  "and sound channels. Values already lower in the pack's config are kept. "
+	  "Applied when content loads.",
+	  NULL, "system",
+	  { { "Off", NULL }, { "On", NULL }, { NULL, NULL } },
+	  "Off" },
 	{ "ikemen_go_resolution",
-	  "Resolution", NULL,
+	  "Video > Resolution", "Resolution",
 	  "Run the game at this resolution, the way editing GameWidth/GameHeight "
 	  "in the pack's config.ini would: framing, aspect and screenpack layout "
 	  "follow. With 'Sprite detail: Auto', sprite textures shrink to match "
 	  "when the pack was authored bigger. Applied when content loads.",
-	  NULL, NULL,
+	  NULL, "video",
 	  { { "Content config", NULL }, { "320x240 (4:3)", NULL },
 	    { "640x480 (4:3)", NULL }, { "720x480 (3:2)", NULL },
 	    { "854x480 (16:9)", NULL }, { "1280x720 (16:9)", NULL },
 	    { NULL, NULL } },
 	  "Content config" },
-	{ "ikemen_go_renderer",
-	  "Renderer", NULL,
-	  "Override the content's RenderMode, for packs whose config asks for a "
-	  "renderer this machine does not have. The GL ES core has a single "
-	  "renderer and ignores this. Applied when content loads.",
-	  NULL, NULL,
-	  { { "Content config", NULL }, { "OpenGL 3.3", NULL },
-	    { "Vulkan 1.3", NULL }, { NULL, NULL } },
-	  "Content config" },
 	{ "ikemen_go_fight_aspect",
-	  "Fight aspect", NULL,
+	  "Video > Fight aspect", "Fight aspect",
 	  "Aspect ratio of matches. 'Stage' follows each stage's own design, so a "
 	  "pack mixing 4:3 and widescreen stages changes shape between fights; a "
 	  "fixed value keeps every fight framed the same. Menus always follow the "
 	  "game resolution. Applied when content loads.",
-	  NULL, NULL,
+	  NULL, "video",
 	  { { "Content config", NULL }, { "Stage", NULL }, { "4:3", NULL },
 	    { "16:9", NULL }, { NULL, NULL } },
 	  "Content config" },
 	{ "ikemen_go_sprite_detail",
-	  "Sprite detail", NULL,
+	  "Video > Sprite detail", "Sprite detail",
 	  "Resolution of large sprite textures, which on a shared-memory GPU live "
 	  "in system RAM. 'Auto' shrinks true-color sprites to match the "
 	  "'Resolution' option -- a 720p pack played at 480p uploads them at half "
@@ -65,13 +74,49 @@ static struct retro_core_option_v2_definition ik_option_defs[] = {
 	  "pixel art, which halving visibly ruins and which is cheap anyway. "
 	  "'Half' shrinks everything. Fonts and UI always keep full detail. "
 	  "Applied when content loads.",
-	  NULL, NULL,
+	  NULL, "video",
 	  { { "Auto", NULL }, { "Full", NULL }, { "Half", NULL }, { NULL, NULL } },
 	  "Auto" },
+	{ "ikemen_go_rgb_filter",
+	  "Video > Smooth true-color sprites", "Smooth true-color sprites",
+	  "Bilinear filtering of true-color sprites when they are scaled. 'Off' "
+	  "keeps them pixel-sharp, which suits CRTs and integer scales; palette-"
+	  "indexed pixel art is never filtered either way. Applied when content "
+	  "loads.",
+	  NULL, "video",
+	  { { "Content config", NULL }, { "On", NULL }, { "Off", NULL },
+	    { NULL, NULL } },
+	  "Content config" },
+	{ "ikemen_go_difficulty",
+	  "Gameplay > Difficulty", "Difficulty",
+	  "AI difficulty, 1 (easiest) to 8 (hardest). Set here because a pack's "
+	  "own options menu is not always usable. Applied when content loads.",
+	  NULL, "gameplay",
+	  { { "Content config", NULL }, { "1", NULL }, { "2", NULL }, { "3", NULL },
+	    { "4", NULL }, { "5", NULL }, { "6", NULL }, { "7", NULL },
+	    { "8", NULL }, { NULL, NULL } },
+	  "Content config" },
+	{ "ikemen_go_round_time",
+	  "Gameplay > Round time", "Round time",
+	  "Time limit per round, in seconds. Applied when content loads.",
+	  NULL, "gameplay",
+	  { { "Content config", NULL }, { "None", NULL }, { "60", NULL },
+	    { "99", NULL }, { NULL, NULL } },
+	  "Content config" },
+	{ "ikemen_go_rounds_win",
+	  "Gameplay > Rounds to win", "Rounds to win",
+	  "Rounds needed to win a match. Applied when content loads.",
+	  NULL, "gameplay",
+	  { { "Content config", NULL }, { "1", NULL }, { "2", NULL }, { "3", NULL },
+	    { NULL, NULL } },
+	  "Content config" },
 	{ NULL, NULL, NULL, NULL, NULL, NULL, { { NULL, NULL } }, NULL }
 };
 
 static struct retro_core_option_v2_category ik_option_cats[] = {
+	{ "system",   "System",   "Engine data source, renderer and memory footprint." },
+	{ "video",    "Video",    "Resolution, aspect and sprite rendering." },
+	{ "gameplay", "Gameplay", "Match settings applied over the pack's defaults." },
 	{ NULL, NULL, NULL }
 };
 
@@ -90,6 +135,16 @@ static const struct retro_variable ik_options[] = {
 	  "Fight aspect; Content config|Stage|4:3|16:9" },
 	{ "ikemen_go_sprite_detail",
 	  "Sprite detail; Auto|Full|Half" },
+	{ "ikemen_go_rgb_filter",
+	  "Smooth true-color sprites; Content config|On|Off" },
+	{ "ikemen_go_ram_saver",
+	  "RAM saver; Off|On" },
+	{ "ikemen_go_difficulty",
+	  "Difficulty; Content config|1|2|3|4|5|6|7|8" },
+	{ "ikemen_go_round_time",
+	  "Round time; Content config|None|60|99" },
+	{ "ikemen_go_rounds_win",
+	  "Rounds to win; Content config|1|2|3" },
 	{ NULL, NULL }
 };
 
