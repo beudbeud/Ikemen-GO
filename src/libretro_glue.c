@@ -34,6 +34,15 @@ static struct retro_core_option_v2_definition ik_option_defs[] = {
 	  { { "Content config", NULL }, { "OpenGL 3.3", NULL },
 	    { "Vulkan 1.3", NULL }, { NULL, NULL } },
 	  "Content config" },
+	{ "ikemen_go_debug",
+	  "System > Debug keys", "Debug keys",
+	  "The engine's keyboard debug tools (F1 kills a fighter, F4 resets the "
+	  "round, Ctrl+D opens the debug overlay...). Packs usually ship them "
+	  "enabled; 'Off' disables them so a stray key on a plugged-in keyboard "
+	  "cannot disrupt a match. Applied when content loads.",
+	  NULL, "system",
+	  { { "Off", NULL }, { "On", NULL }, { NULL, NULL } },
+	  "Off" },
 	{ "ikemen_go_ram_saver",
 	  "System > RAM saver", "RAM saver",
 	  "Cap the engine limits that dominate memory on small boards: 2 players "
@@ -139,6 +148,8 @@ static const struct retro_variable ik_options[] = {
 	  "Smooth true-color sprites; Content config|On|Off" },
 	{ "ikemen_go_ram_saver",
 	  "RAM saver; Off|On" },
+	{ "ikemen_go_debug",
+	  "Debug keys; Off|On" },
 	{ "ikemen_go_difficulty",
 	  "Difficulty; Content config|1|2|3|4|5|6|7|8" },
 	{ "ikemen_go_round_time",
