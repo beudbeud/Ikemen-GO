@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -50,7 +51,7 @@ var lr struct {
 	readyOnce sync.Once
 
 	started  bool
-	quitting bool
+	quitting atomic.Bool // game thread sets it, the retro thread polls it
 
 	w, h       int
 	repW, repH int     // last geometry reported to the frontend (retro thread only)
@@ -122,10 +123,10 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	if lr.started {
 		// The engine can only be started once per process: the Go runtime, the
 		// GL context and the Lua state all outlive an unload.
-		if lr.quitting {
+		if lr.quitting.Load() {
 			libretroMessage("Ikemen GO: restart the frontend to load content again")
 		}
-		return C.bool(!lr.quitting)
+		return C.bool(!lr.quitting.Load())
 	}
 	if game == nil || game.path == nil {
 		libretroMessage("Ikemen GO: load the game folder, or any file inside it")
@@ -219,19 +220,19 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	<-lr.ready
 	fmt.Fprintf(os.Stderr, "Ikemen GO: boot to first frame in %dms\n",
 		time.Since(bootStart).Milliseconds())
-	return C.bool(!lr.quitting)
+	return C.bool(!lr.quitting.Load())
 }
 
 //export retro_unload_game
 func retro_unload_game() {
-	if !lr.started || lr.quitting {
+	if !lr.started || lr.quitting.Load() {
 		return
 	}
 	// Ask the engine to close the way the window's X button would, then keep
 	// pumping frames until it has run its own shutdown. Setting sys.gameEnd
 	// directly would not work: eventUpdate() overwrites it from shouldClose().
 	deadline := time.Now().Add(2 * time.Second)
-	for !lr.quitting && time.Now().Before(deadline) {
+	for !lr.quitting.Load() && time.Now().Before(deadline) {
 		select {
 		case <-lr.frameDone:
 			sys.window.closeflag = true // safe: the game thread is parked
@@ -246,7 +247,7 @@ func retro_run() {
 	if !lr.started {
 		return
 	}
-	if lr.quitting {
+	if lr.quitting.Load() {
 		C.ik_env(C.uint(C.RETRO_ENVIRONMENT_SHUTDOWN), nil)
 		return
 	}
@@ -281,8 +282,12 @@ func retro_run() {
 		libretroReadInput()
 		lr.frameReq <- struct{}{}
 	case <-time.After(libretroFrameTimeout):
-		// Still loading. A nil frame tells the frontend to repeat the last one.
-		C.ik_video(nil, C.uint(lr.w), C.uint(lr.h), C.size_t(lr.w*4))
+		// Still loading. A nil frame tells the frontend to repeat the last one,
+		// at the geometry that frame was delivered with: lr.w/lr.h belong to
+		// the game thread, which is running right now, so they may not be read
+		// here -- and a resize it is mid-way through only takes effect for the
+		// frontend once the frameDone path above reports it anyway.
+		C.ik_video(nil, C.uint(lr.repW), C.uint(lr.repH), C.size_t(lr.repW*4))
 	}
 
 	libretroPushAudio()
@@ -290,7 +295,7 @@ func retro_run() {
 
 // libretroPresentFrame runs on the game thread, right after gfx.EndFrame().
 func libretroPresentFrame() {
-	if lr.quitting {
+	if lr.quitting.Load() {
 		return
 	}
 
@@ -360,7 +365,7 @@ func libretroConvertFrame(dst, src []uint8, w, h int, flip bool) {
 }
 
 func libretroOnExit() {
-	lr.quitting = true
+	lr.quitting.Store(true)
 	lr.readyOnce.Do(func() { close(lr.ready) })
 }
 
@@ -670,6 +675,7 @@ func libretroWarnPendingOptions() {
 	for _, k := range libretroOptionKeys {
 		if libretroVariable(k) != lr.applied[k] {
 			pending = true
+			break
 		}
 	}
 	if pending && !lr.warnedOptions {
