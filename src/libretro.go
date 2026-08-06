@@ -147,11 +147,23 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 			return C.bool(false)
 		}
 	}
-	// Presentation belongs to the frontend. KeepAspect still runs inside the
-	// core (it letterboxes the final blit when the fight aspect differs from
-	// the game resolution); a pack shipping false would stretch those frames,
-	// and stretching is RetroArch's call to make.
-	libretroOverrideConfig(func(cfg *Config) { cfg.Video.KeepAspect = true })
+	// Values a pack must not control under a frontend, pinned without a core
+	// option:
+	//  - KeepAspect still runs inside the core (it letterboxes the final blit
+	//    when the fight aspect differs from the game resolution); false would
+	//    stretch those frames, and stretching is RetroArch's call to make.
+	//  - The frontend paces retro_run at libretroFPS; another Framerate would
+	//    just run the game at the wrong speed.
+	//  - FirstRun triggers the first-boot infobox and key reset, and with
+	//    Config.Save a no-op here it would replay on every single boot.
+	//  - ExternalShaders panics on a missing or GLES-incompatible file, and
+	//    post-processing belongs to the frontend's own shader pipeline.
+	libretroOverrideConfig(func(cfg *Config) {
+		cfg.Video.KeepAspect = true
+		cfg.Video.Framerate = int(libretroFPS)
+		cfg.Config.FirstRun = false
+		cfg.Video.ExternalShaders = nil
+	})
 	libretroForceInput()
 	libretroForceResolution() // before sprite detail: it reads the game size
 	libretroForceFightAspect()
