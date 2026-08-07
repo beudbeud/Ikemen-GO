@@ -21,6 +21,7 @@
 #define RETRO_ENVIRONMENT_GET_VARIABLE           15
 #define RETRO_ENVIRONMENT_SET_VARIABLES          16
 #define RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE    17
+#define RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE   23
 #define RETRO_ENVIRONMENT_SET_GEOMETRY           37
 #define RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION 52
 #define RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2      67
@@ -54,6 +55,17 @@
 #define RETRO_DEVICE_ID_ANALOG_Y        1
 
 #define RETRO_REGION_NTSC 0
+
+enum retro_rumble_effect {
+	RETRO_RUMBLE_STRONG = 0,
+	RETRO_RUMBLE_WEAK   = 1,
+};
+
+typedef bool (*retro_set_rumble_state_t)(unsigned port, enum retro_rumble_effect effect, uint16_t strength);
+
+struct retro_rumble_interface {
+	retro_set_rumble_state_t set_rumble_state;
+};
 
 struct retro_message {
 	const char *msg;
@@ -152,5 +164,10 @@ int16_t ik_input_state(unsigned port, unsigned device, unsigned index, unsigned 
 void    ik_set_input_descriptors(void);
 /* Current value of a core option, or NULL if the frontend has none. */
 const char *ik_get_variable(const char *key);
+/* Rumble: query the frontend for the interface (retro_load_game context),
+ * then drive both motors. SDL naming: lo = big/low-frequency motor
+ * (RETRO_RUMBLE_STRONG), hi = small/high-frequency one (RETRO_RUMBLE_WEAK). */
+bool ik_init_rumble(void);
+void ik_set_rumble(unsigned port, uint16_t lo, uint16_t hi);
 
 #endif

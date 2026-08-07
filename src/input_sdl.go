@@ -343,6 +343,14 @@ func (input *Input) RumbleController(joy int, lo, hi uint16, ticks uint32) {
 		return
 	}
 
+	// Under a libretro frontend the pads are not SDL's; hand the request over.
+	if libretroRumble != nil {
+		if sys.joystickConfig[joy].rumbleOn {
+			libretroRumble(joy, lo, hi, ticks)
+		}
+		return
+	}
+
 	// Only if Rumble Enabled for this config
 	if input.controllerstate[joy].HasRumble && sys.joystickConfig[joy].rumbleOn {
 		gls := sys.gameLogicSpeed()

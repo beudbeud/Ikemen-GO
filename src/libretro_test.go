@@ -349,3 +349,25 @@ func TestLibretroFindMotif(t *testing.T) {
 		t.Errorf("empty: got %q", got)
 	}
 }
+
+func TestLibretroQueueRumble(t *testing.T) {
+	lr.rumble[1].Store(0)
+	libretroQueueRumble(1, 0x1234, 0xBEEF, 60)
+	v := lr.rumble[1].Load()
+	if v&1 == 0 {
+		t.Fatal("dirty bit not set")
+	}
+	if lo := uint16(v >> 48); lo != 0x1234 {
+		t.Errorf("lo: got %#x", lo)
+	}
+	if hi := uint16(v >> 32); hi != 0xBEEF {
+		t.Errorf("hi: got %#x", hi)
+	}
+	if ticks := uint32(v>>1) & 0x7fffffff; ticks != 60 {
+		t.Errorf("ticks: got %d", ticks)
+	}
+	// Out-of-range ports must not panic or write anywhere.
+	libretroQueueRumble(-1, 1, 1, 1)
+	libretroQueueRumble(len(lr.rumble), 1, 1, 1)
+	lr.rumble[1].Store(0)
+}

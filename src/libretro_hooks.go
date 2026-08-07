@@ -20,6 +20,11 @@ var (
 	libretroPads int
 	// libretroExit replaces os.Exit: a core may not kill the frontend process.
 	libretroExit func()
+	// libretroRumble replaces SDL rumble: the frontend owns the physical pads,
+	// so ForceFeedback requests are handed to retro_rumble_interface instead.
+	// Same contract as sdl.GameController.Rumble via RumbleController: lo/hi
+	// motor strengths, duration in game ticks, ticks==0 stops.
+	libretroRumble func(joy int, lo, hi uint16, ticks uint32)
 	// libretroHeadlessGL creates the engine's GL context straight from EGL,
 	// with no window and no SDL video driver. Non-nil only in a `gles` core,
 	// which is the build for frontends that already own the display: on a

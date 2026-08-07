@@ -168,6 +168,25 @@ IK_API void retro_set_environment(retro_environment_t cb)
 		cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void *)ik_options);
 }
 
+static struct retro_rumble_interface rumble_cb;
+
+bool ik_init_rumble(void)
+{
+	struct retro_rumble_interface iface = { NULL };
+	if (!environ_cb || !environ_cb(RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE, &iface) || !iface.set_rumble_state)
+		return false;
+	rumble_cb = iface;
+	return true;
+}
+
+void ik_set_rumble(unsigned port, uint16_t lo, uint16_t hi)
+{
+	if (!rumble_cb.set_rumble_state)
+		return;
+	rumble_cb.set_rumble_state(port, RETRO_RUMBLE_STRONG, lo);
+	rumble_cb.set_rumble_state(port, RETRO_RUMBLE_WEAK, hi);
+}
+
 const char *ik_get_variable(const char *key)
 {
 	struct retro_variable var = { key, NULL };
