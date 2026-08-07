@@ -69,6 +69,10 @@ var lr struct {
 
 	keys map[int]bool       // RETROK_* -> was down last frame
 	keyq []libretroKeyEvent // filled by retro_run, drained on the game thread
+
+	rumbleOK   bool                       // frontend granted retro_rumble_interface
+	rumble     [MaxPlayerNo]atomic.Uint64 // game -> retro: lo<<48 | hi<<32 | ticks<<1 | dirty
+	rumbleLeft [MaxPlayerNo]uint32        // frames until the motors stop (retro thread only)
 }
 
 type libretroKeyEvent struct {
@@ -195,6 +199,7 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 		return C.bool(false)
 	}
 	C.ik_set_input_descriptors()
+	lr.rumbleOK = bool(C.ik_init_rumble())
 
 	lr.frameDone = make(chan struct{})
 	lr.frameReq = make(chan struct{})
@@ -206,6 +211,7 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	libretroPresent = libretroPresentFrame
 	libretroPollInput = libretroDrainKeys
 	libretroExit = libretroOnExit
+	libretroRumble = libretroQueueRumble
 	libretroPads = MaxPlayerNo
 	lr.started = true
 
@@ -240,6 +246,12 @@ func retro_unload_game() {
 		case <-time.After(libretroFrameTimeout):
 		}
 	}
+	// Strengths persist frontend-side; don't leave a motor running past unload.
+	if lr.rumbleOK {
+		for port := range lr.rumble {
+			C.ik_set_rumble(C.uint(port), 0, 0)
+		}
+	}
 }
 
 //export retro_run
@@ -253,6 +265,7 @@ func retro_run() {
 	}
 
 	C.ik_input_poll()
+	libretroApplyRumble()
 
 	// The two options are only read when content loads (window, engine root and
 	// Lua state are all built from them), so a change mid-run cannot be
@@ -522,6 +535,9 @@ func libretroForceInput() {
 				Up:       "DP_U", Down: "DP_D", Left: "DP_L", Right: "DP_R",
 				A: "A", B: "B", C: "RT", X: "X", Y: "Y", Z: "RB",
 				Start: "START", D: "LB", W: "LT", Menu: "BACK",
+				// The frontend has the real say on vibration; the engine-side
+				// gate just has to be open.
+				RumbleOn: true,
 			}
 		}
 	})
@@ -862,6 +878,44 @@ func libretroReadInput() {
 		cs.Axes[3] = libretroAnalog(p, C.RETRO_DEVICE_INDEX_ANALOG_RIGHT, C.RETRO_DEVICE_ID_ANALOG_Y)
 	}
 	libretroReadKeyboard()
+}
+
+// libretroQueueRumble runs on the game thread (ForceFeedback state
+// controller). retro_set_rumble_state belongs to the retro thread, so the
+// request is packed into an atomic and picked up by the next retro_run.
+// Layout: lo<<48 | hi<<32 | ticks<<1 | dirty.
+func libretroQueueRumble(joy int, lo, hi uint16, ticks uint32) {
+	if joy < 0 || joy >= len(lr.rumble) {
+		return
+	}
+	lr.rumble[joy].Store(uint64(lo)<<48 | uint64(hi)<<32 | uint64(ticks&0x7fffffff)<<1 | 1)
+}
+
+// libretroApplyRumble runs on the retro thread, once per retro_run. libretro
+// rumble has no duration parameter (strengths persist until changed), so the
+// countdown lives here: a fresh request restarts it, expiry stops the motors.
+// The engine refreshes an ongoing legacy waveform every tick, which re-arms
+// the countdown before it reaches zero.
+func libretroApplyRumble() {
+	if !lr.rumbleOK {
+		return
+	}
+	for port := range lr.rumble {
+		v := lr.rumble[port].Load()
+		if v&1 != 0 && lr.rumble[port].CompareAndSwap(v, v&^1) {
+			lo, hi := uint16(v>>48), uint16(v>>32)
+			lr.rumbleLeft[port] = uint32(v>>1) & 0x7fffffff
+			if lr.rumbleLeft[port] == 0 { // ticks==0 means stop, like SDL Rumble(0,0,0)
+				lo, hi = 0, 0
+			}
+			C.ik_set_rumble(C.uint(port), C.uint16_t(lo), C.uint16_t(hi))
+		} else if lr.rumbleLeft[port] > 0 {
+			lr.rumbleLeft[port]--
+			if lr.rumbleLeft[port] == 0 {
+				C.ik_set_rumble(C.uint(port), 0, 0)
+			}
+		}
+	}
 }
 
 func libretroTrigger(port, id C.uint) int8 {
