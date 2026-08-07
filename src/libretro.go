@@ -143,6 +143,7 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 		return C.bool(false)
 	}
 
+	libretroRedirectSaves(root)
 	libretroUseSystemEngine()
 	// No engine scripts in the content and no system tree to fall back on:
 	// realMain could only panic. Fail the load with a message instead.
@@ -407,6 +408,45 @@ func libretroGameRoot(path string) string {
 		}
 	}
 	return dir
+}
+
+// libretroRedirectSaves points the engine's per-player files -- config and
+// stats (hiscores, unlocks) -- at <saves>/ikemen/<pack> instead of the content
+// folder: content may be read-only under a frontend, and the save directory is
+// what its cloud sync and backups cover. It also re-enables config writes
+// (libretroConfigPath), so the pack's own options menu persists again. On the
+// first run both files are seeded from the pack, so its identity (resolution,
+// motif) and any shipped hiscores carry over. Replays and logs stay
+// content-side: their paths are hardcoded in the engine's Lua. Without a save
+// directory everything behaves as before.
+func libretroRedirectSaves(root string) {
+	var dir *C.char
+	if !C.ik_env(C.uint(C.RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY), unsafe.Pointer(&dir)) || dir == nil {
+		return
+	}
+	base := filepath.Join(C.GoString(dir), "ikemen", filepath.Base(root))
+	if err := os.MkdirAll(base, 0755); err != nil {
+		fmt.Fprintln(os.Stderr, "Ikemen GO: cannot create save directory:", err)
+		return
+	}
+	for _, f := range [][2]string{
+		{filepath.Join("save", "config.ini"), filepath.Join(base, "config.ini")},
+		{filepath.Join("save", "stats.json"), filepath.Join(base, "stats.json")},
+	} {
+		if _, err := os.Stat(f[1]); err == nil {
+			continue
+		}
+		if b, err := os.ReadFile(f[0]); err == nil {
+			os.WriteFile(f[1], b, 0644)
+		}
+	}
+	// processCommandLine is a no-op in a core (os.Args belongs to the
+	// frontend), so these flags reach main.go untouched.
+	sys.cmdFlags = map[string]string{
+		"-config": filepath.Join(base, "config.ini"),
+		"-stats":  filepath.Join(base, "stats.json"),
+	}
+	libretroConfigPath = sys.cmdFlags["-config"]
 }
 
 // libretroUseSystemEngine honours the "Engine files" core option. Set to
