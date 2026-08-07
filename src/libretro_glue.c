@@ -119,6 +119,24 @@ static struct retro_core_option_v2_definition ik_option_defs[] = {
 	  { { "Content config", NULL }, { "1", NULL }, { "2", NULL }, { "3", NULL },
 	    { NULL, NULL } },
 	  "Content config" },
+	{ "ikemen_go_life",
+	  "Gameplay > Life", "Life",
+	  "Starting life of every fighter, as a percentage of normal. Applied when "
+	  "content loads.",
+	  NULL, "gameplay",
+	  { { "Content config", NULL }, { "50%", NULL }, { "70%", NULL },
+	    { "80%", NULL }, { "90%", NULL }, { "100%", NULL }, { "120%", NULL },
+	    { "150%", NULL }, { "200%", NULL }, { "300%", NULL }, { NULL, NULL } },
+	  "Content config" },
+	{ "ikemen_go_speed",
+	  "Gameplay > Game speed", "Game speed",
+	  "Speed the match runs at, relative to normal. Applied when content "
+	  "loads.",
+	  NULL, "gameplay",
+	  { { "Content config", NULL }, { "Slow 3", NULL }, { "Slow 2", NULL },
+	    { "Slow 1", NULL }, { "Normal", NULL }, { "Fast 1", NULL },
+	    { "Fast 2", NULL }, { "Fast 3", NULL }, { NULL, NULL } },
+	  "Content config" },
 	{ NULL, NULL, NULL, NULL, NULL, NULL, { { NULL, NULL } }, NULL }
 };
 
@@ -156,6 +174,10 @@ static const struct retro_variable ik_options[] = {
 	  "Round time; Content config|None|60|99" },
 	{ "ikemen_go_rounds_win",
 	  "Rounds to win; Content config|1|2|3" },
+	{ "ikemen_go_life",
+	  "Life; Content config|50%|70%|80%|90%|100%|120%|150%|200%|300%" },
+	{ "ikemen_go_speed",
+	  "Game speed; Content config|Slow 3|Slow 2|Slow 1|Normal|Fast 1|Fast 2|Fast 3" },
 	{ NULL, NULL }
 };
 

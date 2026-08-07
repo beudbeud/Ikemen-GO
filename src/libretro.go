@@ -494,7 +494,8 @@ var libretroOptionKeys = []string{
 	"ikemen_go_engine_files", "ikemen_go_resolution", "ikemen_go_renderer",
 	"ikemen_go_sprite_detail", "ikemen_go_fight_aspect", "ikemen_go_ram_saver",
 	"ikemen_go_rgb_filter", "ikemen_go_difficulty", "ikemen_go_round_time",
-	"ikemen_go_rounds_win", "ikemen_go_debug",
+	"ikemen_go_rounds_win", "ikemen_go_life", "ikemen_go_speed",
+	"ikemen_go_debug",
 }
 
 // libretroOverrideConfig appends f to the chain run on the config the moment
@@ -711,6 +712,18 @@ func libretroForceGameplay() {
 	if n, err := strconv.Atoi(libretroVariable("ikemen_go_rounds_win")); err == nil {
 		libretroOverrideConfig(func(cfg *Config) { cfg.Options.Match.Wins = int32(n) })
 	}
+	if n, err := strconv.Atoi(strings.TrimSuffix(libretroVariable("ikemen_go_life"), "%")); err == nil {
+		libretroOverrideConfig(func(cfg *Config) { cfg.Options.Life = float32(n) })
+	}
+	if n, ok := libretroSpeeds[libretroVariable("ikemen_go_speed")]; ok {
+		libretroOverrideConfig(func(cfg *Config) { cfg.Options.GameSpeed = n })
+	}
+}
+
+// The engine runs match logic at 60 + GameSpeed*GameSpeedStep ticks per second.
+var libretroSpeeds = map[string]int{
+	"Slow 3": -3, "Slow 2": -2, "Slow 1": -1, "Normal": 0,
+	"Fast 1": 1, "Fast 2": 2, "Fast 3": 3,
 }
 
 // libretroVariable returns the frontend's current value for a core option,
