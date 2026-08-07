@@ -42,6 +42,11 @@ var (
 	// the content folder. Empty unless the core was told to source the engine
 	// files from the frontend's system directory.
 	libretroEngineRoot string
+	// libretroConfigPath is the one file Config.Save may write in a core: the
+	// engine's config redirected into the frontend's save directory. Empty --
+	// no save directory -- keeps every config write blocked, since the only
+	// other target is the pack's own config.ini.
+	libretroConfigPath string
 )
 
 // libretroSpriteShrink divides sprite texture resolution at upload (0 or 1 =

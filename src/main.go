@@ -216,6 +216,12 @@ func realMain() {
 
 // Loops through given comand line arguments and processes them for later use by the game
 func processCommandLine() {
+	// A libretro core is a shared object inside the frontend's process:
+	// os.Args belongs to the frontend, and the core presets sys.cmdFlags in
+	// retro_load_game.
+	if libretroPresent != nil {
+		return
+	}
 	// If there are command line arguments
 	if len(os.Args[1:]) > 0 {
 		sys.cmdFlags = make(map[string]string)

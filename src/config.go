@@ -468,9 +468,11 @@ func (c *Config) Save(file string) error {
 	// A libretro core never writes the content's config back: the file is the
 	// pack's identity (what resolution its assets were authored for), and the
 	// core's own overrides -- forced resolution, input, common lists -- must
-	// not leak into it and poison every later launch. Settings live in the
-	// frontend's core options instead.
-	if libretroPresent != nil {
+	// not leak into it and poison every later launch. The one allowed target
+	// is the copy redirected into the frontend's save directory -- overrides
+	// never reach it either, since they mutate the struct, not the IniFile
+	// this writes.
+	if libretroPresent != nil && file != libretroConfigPath {
 		return nil
 	}
 	return SaveINI(c.IniFile, file)

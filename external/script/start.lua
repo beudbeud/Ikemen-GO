@@ -1393,7 +1393,9 @@ function start.f_getRecordText()
 	if text == nil then
 		return ""
 	end
-	local stats = jsonDecode('save/stats.json')
+	-- The stats file can be redirected (-stats flag, libretro save directory),
+	-- so resolve it the same way the rest of the engine does.
+	local stats = jsonDecode(getCommandLineValue('-stats'))
 	if stats.modes == nil or stats.modes[gameMode()] == nil or stats.modes[gameMode()].ranking == nil or stats.modes[gameMode()].ranking[1] == nil then
 		return ""
 	end
