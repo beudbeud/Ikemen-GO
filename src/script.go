@@ -1600,6 +1600,15 @@ func systemScriptInit(l *lua.LState) {
 		palIdx := a.anim.palettedata.SelectablePalIndex(palNum)
 		if len(a.anim.palettedata.paletteMap) > 0 {
 			a.anim.palettedata.paletteMap[0] = palIdx
+			// SFFv1 may have duplicate base palettes mapped to palette 1.
+			if a.anim.sff.header.Version[0] == 1 && len(a.anim.palettedata.paletteMap) > 1 {
+				for _, spr := range a.anim.sff.sprites {
+					if spr != nil && spr.sffv1BasePal {
+						a.anim.palettedata.paletteMap[1] = palIdx
+						break
+					}
+				}
+			}
 		}
 		l.Push(newUserData(l, a))
 		return 1
@@ -2158,7 +2167,8 @@ func systemScriptInit(l *lua.LState) {
 		if !nilArg(l, 5) {
 			scl = float32(numArg(l, 5))
 		}
-		// BGDef.Draw mutates BGDef state (time/BGCtrl/anim). Copying BGDef makes those updates happen on the copy only. Keep a pointer to the live BGDef.
+		bg.step()
+		// Keep a pointer to the live BGDef for deferred drawing.
 		bgLocal := bg
 		layerLocal := layer
 		xLocal, yLocal, sclLocal := x, y, scl
@@ -2482,10 +2492,10 @@ func systemScriptInit(l *lua.LState) {
 		return 1
 	})
 	luaRegister(l, "endMatch", func(*lua.LState) int {
-		/*Signal that the current match should end (using menu fade-out settings).
+		/*Signal that the current match should end (using fight screen fade-out settings).
 		@function endMatch
 		function endMatch() end*/
-		sys.motif.PauseMenu["pause_menu"].FadeOut.FadeData.init(sys.motif.fadeOut, false)
+		sys.fightScreen.round.fadeOut.init(sys.fightScreen.round.fadeOut, false)
 		sys.uiResetTokenGuard()
 		sys.endMatch = true
 		return 0
@@ -2532,9 +2542,6 @@ func systemScriptInit(l *lua.LState) {
 		  `false` otherwise.
 		function enterReplay(path) end*/
 		sys.sessionWarning = ""
-		if sys.cfg.Video.VSync >= 0 {
-			sys.window.SetSwapInterval(1) // broken frame skipping when set to 0
-		}
 		sys.chars = [len(sys.chars)][]*Char{}
 		sys.replayFile = OpenReplayFile(strArg(l, 1))
 		if sys.replayFile != nil {
@@ -2590,9 +2597,6 @@ func systemScriptInit(l *lua.LState) {
 		function exitReplay() end*/
 		if err := sys.endSyncSessionOverride(); err != nil {
 			l.RaiseError(err.Error())
-		}
-		if sys.cfg.Video.VSync >= 0 {
-			sys.window.SetSwapInterval(sys.cfg.Video.VSync)
 		}
 		if sys.replayFile != nil {
 			sys.replayFile.Close()
@@ -2997,6 +3001,7 @@ func systemScriptInit(l *lua.LState) {
 		sys.keyInput = KeyUnknown
 		sys.luaDiscardDrawQueue()
 		sys.gameRunning = true
+		sys.escPending = false
 		sys.motif.fadeIn.reset()
 		sys.motif.fadeOut.reset()
 		sys.endMatch = false
@@ -3195,10 +3200,9 @@ func systemScriptInit(l *lua.LState) {
 				if winp, err = fight(); err != nil {
 					l.RaiseError(err.Error())
 				}
-				// Hard reset: drop the incomplete match stats and start a fresh one
+				// Hard reset: discard all stats from the abandoned attempt.
 				if winp == -2 {
-					sys.statsLog.abortMatch()
-					sys.statsLog.startMatch()
+					sys.statsLog.discardCurrentMatch()
 				}
 				// If a team won, and not going to the next character in turns mode, break
 				if winp < 0 ||
@@ -3238,6 +3242,7 @@ func systemScriptInit(l *lua.LState) {
 			// If not restarting match
 			if winp != -2 {
 				sys.esc = false
+				sys.escPending = false
 				sys.keyInput = KeyUnknown
 				if sys.gameMode == "challenger" {
 					sys.statsLog.discardCurrentMatch()
@@ -3274,6 +3279,7 @@ func systemScriptInit(l *lua.LState) {
 				sys.consoleText = []string{}
 				sys.stageLoopNo = 0
 				sys.paused = false
+				sys.uiFrameCounter++
 				sys.gameRunning = false
 				sys.clearSpriteData()
 				sys.motif.fadeIn.reset()
@@ -4305,6 +4311,7 @@ func systemScriptInit(l *lua.LState) {
 		@tparam[opt=1.0] float32 scale Uniform scale applied to debug text (both X and Y).
 		function loadDebugFont(filename, scale) end*/
 		ts := NewTextSprite()
+		ts.palfx.ignoreAllPalFX = true
 		f, err := loadFnt(strArg(l, 1), -1)
 		if err != nil {
 			l.RaiseError("\nCan't load %v: %v\n", strArg(l, 1), err.Error())
@@ -5059,6 +5066,16 @@ func systemScriptInit(l *lua.LState) {
 		sys.debugWC.mapSet(strArg(l, 1), float32(numArg(l, 2)), scType)
 		return 0
 	})
+	luaRegister(l, "motifIsInherited", func(l *lua.LState) int {
+		/*Returns whether a motif value was inherited from another motif parameter.
+		@function motifIsInherited
+		@tparam string key Motif key path.
+		@treturn boolean
+		function motifIsInherited(key) end*/
+		key := strings.ToLower(l.CheckString(1))
+		l.Push(lua.LBool(sys.motif.inheritedKeys[key]))
+		return 1
+	})
 	luaRegister(l, "storyboardCanceled", func(l *lua.LState) int {
 		/*Check whether the most recent storyboard was canceled by the player.
 		@function storyboardCanceled
@@ -5073,18 +5090,20 @@ func systemScriptInit(l *lua.LState) {
 		@tparam string filename glTF model file path.
 		@treturn Model model Model userdata.
 		function modelNew(filename) end*/
-		if !nilArg(l, 1) {
-			mdl, err := loadglTFModel(strArg(l, 1))
-			if err != nil {
-				l.RaiseError("\nCan't load %v: %v\n", strArg(l, 1), err.Error())
-			}
-			sys.mainThreadTask <- func() {
-				gfx.SetModelVertexData(1, mdl.vertexBuffer)
-				gfx.SetModelIndexData(1, mdl.elementBuffer...)
-			}
-			sys.runMainThreadTask()
-			l.Push(newUserData(l, mdl))
+		if nilArg(l, 1) {
+			l.Push(lua.LNil)
+			return 1
 		}
+		mdl, err := loadglTFModel(strArg(l, 1))
+		if err != nil {
+			l.RaiseError("\nCan't load %v: %v\n", strArg(l, 1), err.Error())
+		}
+		sys.mainThreadTask <- func() {
+			gfx.SetModelVertexData(1, mdl.vertexBuffer)
+			gfx.SetModelIndexData(1, mdl.elementBuffer...)
+		}
+		sys.runMainThreadTask()
+		l.Push(newUserData(l, mdl))
 		return 1
 	})
 	luaRegister(l, "modifyGameOption", func(l *lua.LState) int {
@@ -5829,6 +5848,7 @@ func systemScriptInit(l *lua.LState) {
 			sys.motif.fadeIn.step()
 		}
 		sys.stepCommandLists()
+		sys.uiFrameCounter++
 		if !sys.update() {
 			l.RaiseError("<game end>")
 		}
@@ -9919,6 +9939,8 @@ func triggerFunctions(l *lua.LState) {
 	luaRegister(l, "p2StateNo", func(*lua.LState) int {
 		if p2 := sys.debugWC.p2(); p2 != nil {
 			l.Push(lua.LNumber(p2.ss.no))
+		} else {
+			l.Push(lua.LNumber(-1))
 		}
 		return 1
 	})

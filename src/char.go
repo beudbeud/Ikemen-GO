@@ -183,19 +183,15 @@ func (dc *DebugClsn) Add(clsn [][4]float32, x, y, xs, ys, angle float32) {
 	y = (y*sys.cam.Scale - sys.cam.Pos[1]) + sys.cam.GroundLevel()
 	xs *= sys.cam.Scale
 	ys *= sys.cam.Scale
-	sw := float32(sys.gameWidth)
-	sh := float32(0)
 
 	for i := 0; i < len(clsn); i++ {
-		offx := sw / 2
-		offy := sh
 		rect := [7]float32{
 			Abs(xs) * clsn[i][0],           // [0] x position (left)
 			Abs(ys) * clsn[i][1],           // [1] y position (top)
 			xs * (clsn[i][2] - clsn[i][0]), // [2] width
 			ys * (clsn[i][3] - clsn[i][1]), // [3] height
-			(x + offx) * sys.widthScale,    // [4] rotation center x
-			(y + offy) * sys.heightScale,   // [5] rotation center y
+			x,                              // [4] rotation center x, relative to screen center
+			y,                              // [5] rotation center y
 			angle,                          // [6] rotation angle
 		}
 
@@ -207,6 +203,11 @@ func (dc *DebugClsn) Add(clsn [][4]float32, x, y, xs, ys, angle float32) {
 func (dc *DebugClsn) draw(color uint32, blendAlpha [2]int32) {
 	if len(dc.rects) == 0 {
 		return
+	}
+
+	drawwindow := &sys.scrrect
+	if viewport, ok := sys.fightDrawClip(); ok {
+		drawwindow = &viewport
 	}
 
 	// Initialize the palette texture for this specific rect type if it doesn't exist yet
@@ -237,9 +238,9 @@ func (dc *DebugClsn) draw(color uint32, blendAlpha [2]int32) {
 			blendAlpha:     blendAlpha,
 			mask:           -1,
 			pfx:            nil,
-			window:         &sys.scrrect,
-			rcx:            c[4],
-			rcy:            c[5],
+			window:         drawwindow,
+			rcx:            (c[4] + sys.gameWidth/2) * sys.widthScale,
+			rcy:            c[5] * sys.heightScale,
 			projectionMode: 0,
 			fLength:        0,
 			xOffset:        0,
@@ -1735,6 +1736,14 @@ func (e *Explod) initFromChar(c *Char) *Explod {
 	return e
 }
 
+func (e *Explod) root() *Char {
+	return sys.chars[e.playerno][0]
+}
+
+func (e *Explod) parent() *Char {
+	return sys.playerID(e.ownerId)
+}
+
 func (e *Explod) setAllPosX(x float32) {
 	e.pos[0], e.oldPos[0], e.newPos[0] = x, x, x
 }
@@ -1842,7 +1851,7 @@ func (e *Explod) matchId(eid, pid int32) bool {
 }
 
 func (e *Explod) setAnim() {
-	c := sys.playerID(e.ownerId)
+	c := e.parent()
 	if c == nil {
 		return
 	}
@@ -1918,7 +1927,7 @@ func (e *Explod) canAct() bool {
 
 	// Apply ignorehitpause
 	if act && !e.ignorehitpause {
-		if parent := sys.playerID(e.ownerId); parent != nil {
+		if parent := e.parent(); parent != nil {
 			act = parent.acttmp%2 >= 0
 		}
 	}
@@ -1933,12 +1942,12 @@ func (e *Explod) update() {
 		return
 	}
 
-	parent := sys.playerID(e.ownerId)
-	root := sys.chars[e.playerno][0]
-
-	if root.scf(SCF_disabled) {
+	if e.root().scf(SCF_disabled) {
 		return
 	}
+
+	// Fetch parent once. It's a more expensive operation than root()
+	parent := e.parent()
 
 	// Remove on get hit
 	if sys.tickNextFrame() && e.removeongethit &&
@@ -1963,7 +1972,7 @@ func (e *Explod) update() {
 		}
 	}
 
-	oldVer := root.gi().mugenver[0] != 1 || root.gi().mugenver[1] != 1
+	oldVer := e.root().gi().mugenver[0] != 1 || e.root().gi().mugenver[1] != 1
 
 	// Bind explod to parent
 	// In Mugen this only happens if the explod is not paused, hence "act"
@@ -2123,14 +2132,17 @@ func (e *Explod) update() {
 }
 
 func (e *Explod) cueDraw() {
-	if e.hidewithbars && sys.shouldHideWithBars() {
-		return
-	}
 	if e.anim == nil {
 		return
 	}
+	if e.root().scf(SCF_disabled) {
+		return
+	}
+	if e.hidewithbars && sys.shouldHideWithBars() {
+		return
+	}
 
-	parent := sys.playerID(e.ownerId)
+	parent := e.parent()
 	act := e.canAct()
 
 	var pfx *PalFX
@@ -2538,6 +2550,10 @@ func (p *Projectile) paused() bool {
 }
 
 func (p *Projectile) update() {
+	if p.root().scf(SCF_disabled) {
+		return
+	}
+
 	// Check projectile removal conditions
 	if sys.tickFrame() && !p.paused() && p.hitpause == 0 {
 		// Check if timer has expired or boundaries were reached
@@ -2777,6 +2793,10 @@ func (p *Projectile) tradeDetection(playerNo, index int) {
 }
 
 func (p *Projectile) tick() {
+	if p.root().scf(SCF_disabled) {
+		return
+	}
+
 	if p.contactflag {
 		p.contactflag = false
 		// Projectile hitpause should maybe be set in this place instead of using "(p.hitpause <= 0 || p.contactflag)" for hit checking
@@ -2792,6 +2812,7 @@ func (p *Projectile) tick() {
 		}
 		p.hitdef.air_juggle = 0
 	}
+
 	if !p.paused() {
 		if p.hitpause <= 0 {
 			p.time++ // Only used in ProjVar currently
@@ -2829,6 +2850,9 @@ func (p *Projectile) tick() {
 func (p *Projectile) cueDraw() {
 	// Nothing to draw here. Not even debug
 	if p.anim == nil {
+		return
+	}
+	if p.root().scf(SCF_disabled) {
 		return
 	}
 
@@ -2906,6 +2930,9 @@ func (p *Projectile) cueDraw() {
 		p.window[3] * basescale[1],
 	}
 
+	// Fetch owner once
+	owner := p.owner()
+
 	// Prepare sprite data
 	sd := newSpriteData()
 	sd.anim = p.anim
@@ -2917,7 +2944,7 @@ func (p *Projectile) cueDraw() {
 	sd.layerno = p.layerno
 	sd.priority = p.sprpriority + int32(p.pos[2]*p.localscl)
 	sd.rot = rot
-	sd.undarken = p.owner() != nil && p.owner().ignoreDarkenTime > 0
+	sd.undarken = owner != nil && owner.ignoreDarkenTime > 0
 	sd.facing = p.facing
 	sd.projection = int32(p.projection)
 	sd.fLength = fLength
@@ -2938,7 +2965,7 @@ func (p *Projectile) cueDraw() {
 	// Record afterimage
 	if p.aimg != nil {
 		if p.aimg.isActive() {
-			p.aimg.recAndCue(sd, p.owner().playerNo, sys.tickNextFrame() && notpause, false)
+			p.aimg.recAndCue(sd, p.playerno, sys.tickNextFrame() && notpause, false)
 		} else {
 			p.aimg = nil
 		}
@@ -2979,6 +3006,7 @@ func (p *Projectile) root() *Char {
 	return sys.chars[p.playerno][0]
 }
 
+// Not "parent()" because a projectile is not always owned by the char that spawned it
 func (p *Projectile) owner() *Char {
 	return sys.playerID(p.ownerId)
 }
@@ -4360,8 +4388,13 @@ func (c *Char) loadPalettes() {
 			gi.palInfo[i] = pal
 		}
 
-		// If no ACT files were successfully loaded, remove the default [1, 1] mapping
-		if tmp == 0 {
+		if tmp > 0 {
+			// Ensure [1, 1] exists so RemapPal can use the SFFv1 base palette as source.
+			if _, ok := gi.palettedata.palList.PalTable[[...]uint16{1, 1}]; !ok {
+				gi.palettedata.palList.PalTable[[...]uint16{1, 1}] = 0
+			}
+		} else {
+			// If no ACT files were successfully loaded, remove the default [1, 1] mapping.
 			delete(gi.palettedata.palList.PalTable, [...]uint16{1, 1})
 		}
 	} else {
@@ -4375,6 +4408,14 @@ func (c *Char) loadPalettes() {
 				gi.palettedata.palList.SetSource(i, pData)
 				gi.palettedata.palList.PalTex[i] = NewTextureFromPalette(pData)
 			}
+		}
+
+		// Copy duplicate palette mappings from the SFFv2.
+		plist := &gi.palettedata.palList
+		plist.duplicatePals = make(map[int][]int)
+
+		for physical, duplicates := range gi.sff.palList.duplicatePals {
+			plist.duplicatePals[physical] = append([]int(nil), duplicates...)
 		}
 
 		// Overwrite SFF palettes with ACT palettes
@@ -6037,7 +6078,10 @@ func (c *Char) screenPosY() float32 {
 
 func (c *Char) screenHeight() float32 {
 	// We need both match and screenpack aspects because of victory and game over screens
-	aspect := sys.getCurrentAspect()
+	aspect := sys.getFightAspect()
+	if !sys.middleOfMatch() {
+		aspect = sys.getCurrentAspect()
+	}
 
 	// Compute height from width
 	height := float32(c.stOgi().localcoord[0]) / aspect
@@ -6687,6 +6731,13 @@ func (c *Char) destroy() {
 	// Remove ID from target's GetHitVars
 	for _, tid := range c.targets {
 		if t := sys.playerID(tid); t != nil {
+			// If this target is still bound to the helper, force it to SelfState
+			// This placement is more reliable than doing it from the target
+			// https://github.com/ikemen-engine/Ikemen-GO/issues/3766
+			if t.bindToId == c.id {
+				t.selfState(5050, -1, -1, -1, "")
+				t.gethitBindClear()
+			}
 			t.ghv.dropPlayerId(c.id)
 		}
 	}
@@ -8287,14 +8338,18 @@ func (c *Char) targetBind(tar []int32, time int32, x, y, z float32) {
 func (c *Char) bindToTarget(tar []int32, time int32, x, y, z float32, hmf HMF) {
 	if len(tar) > 0 {
 		if t := sys.playerID(tar[0]); t != nil {
+			// Add head/mid/foot offset
 			switch hmf {
-			case HMF_M:
-				x += t.size.mid.pos[0] * ((320 / t.localcoord) / c.localscl)
-				y += t.size.mid.pos[1] * ((320 / t.localcoord) / c.localscl)
 			case HMF_H:
 				x += t.size.head.pos[0] * ((320 / t.localcoord) / c.localscl)
 				y += t.size.head.pos[1] * ((320 / t.localcoord) / c.localscl)
+			case HMF_M:
+				x += t.size.mid.pos[0] * ((320 / t.localcoord) / c.localscl)
+				y += t.size.mid.pos[1] * ((320 / t.localcoord) / c.localscl)
+			case HMF_F:
+				// Do nothing. Feet are 0,0
 			}
+
 			if !math.IsNaN(float64(x)) {
 				c.setPosX(t.pos[0]*(t.localscl/c.localscl)+x*t.facing, true)
 			}
@@ -8304,6 +8359,8 @@ func (c *Char) bindToTarget(tar []int32, time int32, x, y, z float32, hmf HMF) {
 			if !math.IsNaN(float64(z)) {
 				c.setPosZ(t.pos[2]*(t.localscl/c.localscl)+z, true)
 			}
+
+			// Binding to a target in reality also binds that target
 			c.targetBind(tar[:1], time,
 				c.facing*c.distX(t, c),
 				(t.pos[1]*(t.localscl/c.localscl))-(c.pos[1]*(c.localscl/t.localscl)),
@@ -9329,6 +9386,12 @@ func (c *Char) remapPal(pfx *PalFX, src [2]int32, dst [2]int32) {
 		// Always remap the requested source palette
 		plist.Remap(si, di)
 
+		// Also remap logical palettes that contain the same palette data.
+		// This handles SFFv2 sprites using a duplicated palette entry.
+		// https://github.com/ikemen-engine/Ikemen-GO/issues/3854
+		for _, duplicate := range plist.duplicatePals[si] {
+			plist.Remap(duplicate, di)
+		}
 		// For SFFv1, remapping 1,1 should also remap whatever palettes sprites 0,0 and 9000,0 use
 		// TODO: Because 9000,0 is not hardcoded in Ikemen, this might create trouble for custom portraits
 		if src[0] == 1 && src[1] == 1 && c.gi().sff.header.Version[0] == 1 {
@@ -9393,11 +9456,15 @@ func (c *Char) getDrawPal(palIndex int) [2]int32 {
 }
 
 func (c *Char) drawPal() [2]int32 {
-	palMap := c.getPalMap()
-	if len(palMap) == 0 {
+	if c.anim == nil || c.anim.spr == nil {
 		return [2]int32{0, 0}
 	}
-	return c.getDrawPal(palMap[0])
+	palMap := c.getPalMap()
+	source := c.anim.spr.palidx
+	if source >= 0 && source < len(palMap) {
+		source = palMap[source]
+	}
+	return c.getDrawPal(source)
 }
 
 type RemapTable map[int32][2]int32
@@ -9791,11 +9858,10 @@ func (c *Char) setBindTime(time int32) {
 }
 
 func (c *Char) setBindToId(to *Char, isTargetBind bool) {
-	if c.bindToId != to.id {
-		c.bindToId = to.id
-	}
+	c.bindToId = to.id
+
 	// Target binds are all we need to correct with this logic.
-	// By the time this gets to the bind() method, it's going to
+	// By the time this gets to the updateBinding() method, it's going to
 	// default to setting the facing to the same as the "bindTo"
 	// facing at that point. So as weird as it may be to default
 	// to 0 here, this behavior does seem to be what MUGEN
@@ -9803,76 +9869,85 @@ func (c *Char) setBindToId(to *Char, isTargetBind bool) {
 	if c.bindFacing == 0 && isTargetBind {
 		c.bindFacing = to.facing * 2
 	}
+
 	if to.bindToId == c.id {
 		to.setBindTime(0)
 	}
 }
 
-func (c *Char) bind() {
-	if c.bindTime == 0 {
-		if bt := sys.playerID(c.bindToId); bt != nil {
-			if bt.hasTarget(c.id) {
-				if bt.csf(CSF_destroy) {
-					sys.appendToConsole(c.warn() + fmt.Sprintf("SelfState 5050, helper destroyed: %v", bt.name))
-					if c.ss.moveType == MT_H {
-						c.selfState(5050, -1, -1, -1, "")
-					}
-					c.setBindTime(0)
-					return
-				}
-			}
-		}
-		if c.bindToId > 0 {
-			c.setBindTime(0)
-		}
+// Updates binding position and velocity only. Time and ID handled elsewhere
+func (c *Char) updateBinding() {
+	if c.bindToId < 0 || c.bindTime == 0 {
 		return
 	}
-	if bt := sys.playerID(c.bindToId); bt != nil {
-		if bt.hasTarget(c.id) {
-			if !math.IsNaN(float64(c.bindPos[0])) {
-				c.vel[0] = c.facing * bt.facing * bt.vel[0]
-			}
-			if !math.IsNaN(float64(c.bindPos[1])) {
-				c.vel[1] = bt.vel[1]
-			}
-			if !math.IsNaN(float64(c.bindPos[2])) {
-				c.vel[2] = bt.vel[2]
-			}
-		}
+
+	bt := sys.playerID(c.bindToId)
+
+	if bt == nil {
+		return
+	}
+
+	// Copy velocity if this is a target bind
+	if bt.hasTarget(c.id) {
 		if !math.IsNaN(float64(c.bindPos[0])) {
-			f := bt.facing
-			// We only need to correct for target binds (and snaps)
-			if Abs(c.bindFacing) == 2 {
-				f = c.bindFacing / 2
-			}
-			c.setPosX(bt.pos[0]*bt.localscl/c.localscl+f*(c.bindPos[0]+c.bindPosAdd[0]), true)
-			c.interPos[0] += bt.interPos[0] - bt.pos[0]
-			c.oldPos[0] += bt.oldPos[0] - bt.pos[0]
-			c.pushed = c.pushed || bt.pushed
-			c.ghv.xoff = 0
+			c.vel[0] = c.facing * bt.facing * bt.vel[0]
 		}
 		if !math.IsNaN(float64(c.bindPos[1])) {
-			c.setPosY(bt.pos[1]*bt.localscl/c.localscl+(c.bindPos[1]+c.bindPosAdd[1]), true)
-			c.interPos[1] += bt.interPos[1] - bt.pos[1]
-			c.oldPos[1] += bt.oldPos[1] - bt.pos[1]
-			c.ghv.yoff = 0
+			c.vel[1] = bt.vel[1]
 		}
 		if !math.IsNaN(float64(c.bindPos[2])) {
-			c.setPosZ(bt.pos[2]*bt.localscl/c.localscl+(c.bindPos[2]+c.bindPosAdd[2]), true)
-			c.interPos[2] += bt.interPos[2] - bt.pos[2]
-			c.oldPos[2] += bt.oldPos[2] - bt.pos[2]
-			c.ghv.zoff = 0
+			c.vel[2] = bt.vel[2]
 		}
-		if Abs(c.bindFacing) == 1 {
-			if c.bindFacing > 0 {
-				c.setFacing(bt.facing)
-			} else {
-				c.setFacing(-bt.facing)
-			}
+	}
+
+	// Do the actual binding
+	c.bindToPlayer(bt)
+}
+
+// Does the actual position binding. Extracted so it can run twice in the same frame if necessary
+func (c *Char) bindToPlayer(bt *Char) {
+	// X
+	if !math.IsNaN(float64(c.bindPos[0])) {
+		f := bt.facing
+		// We only need to correct for target binds (and snaps)
+		if Abs(c.bindFacing) == 2 {
+			f = c.bindFacing / 2
 		}
-	} else {
-		c.setBindTime(0)
-		return
+		newX := bt.pos[0]*bt.localscl/c.localscl + f*(c.bindPos[0]+c.bindPosAdd[0])
+		c.setPosX(newX, true)
+		c.interPos[0] += bt.interPos[0] - bt.pos[0]
+		c.oldPos[0] += bt.oldPos[0] - bt.pos[0]
+		c.pushed = c.pushed || bt.pushed
+		c.ghv.xoff = 0
+	}
+
+	// Y
+	if !math.IsNaN(float64(c.bindPos[1])) {
+		newY := bt.pos[1]*bt.localscl/c.localscl + (c.bindPos[1] + c.bindPosAdd[1])
+		c.setPosY(newY, true)
+		c.interPos[1] += bt.interPos[1] - bt.pos[1]
+		c.oldPos[1] += bt.oldPos[1] - bt.pos[1]
+		//c.pushed = c.pushed || bt.pushed // No pushing happens on y-axis
+		c.ghv.yoff = 0
+	}
+
+	// Z
+	if !math.IsNaN(float64(c.bindPos[2])) {
+		newZ := bt.pos[2]*bt.localscl/c.localscl + (c.bindPos[2] + c.bindPosAdd[2])
+		c.setPosZ(newZ, true)
+		c.interPos[2] += bt.interPos[2] - bt.pos[2]
+		c.oldPos[2] += bt.oldPos[2] - bt.pos[2]
+		c.pushed = c.pushed || bt.pushed
+		c.ghv.zoff = 0
+	}
+
+	// Facing
+	if Abs(c.bindFacing) == 1 {
+		if c.bindFacing > 0 {
+			c.setFacing(bt.facing)
+		} else {
+			c.setFacing(-bt.facing)
+		}
 	}
 }
 
@@ -12004,13 +12079,20 @@ func (c *Char) actionRun() {
 	}
 	c.xScreenBound()
 	c.zDepthBound()
+
+	// Update binding others and binding to others
+	// In Mugen, binding to a target allows one to exit screen boundaries, hence being placed after xScreenBound()
 	if !c.pauseBool {
+		if !c.isTargetBound() {
+			c.updateBinding()
+		}
 		for _, tid := range c.targets {
 			if t := sys.playerID(tid); t != nil && t.bindToId == c.id {
-				t.bind()
+				t.updateBinding()
 			}
 		}
 	}
+
 	c.acttmp += int8(Btoi(!c.pause() && !c.hitPause())) - int8(Btoi(c.hitPause()))
 	// Signal that "actionRun" has finished
 	c.minus = 1
@@ -12147,9 +12229,6 @@ func (c *Char) update() {
 				return
 			}
 		*/
-		if !c.pause() && !c.isTargetBound() {
-			c.bind()
-		}
 		if c.acttmp > 0 {
 			if c.inGuardState() {
 				c.setSCF(SCF_guard)
@@ -12184,6 +12263,7 @@ func (c *Char) update() {
 			//	c.makeDust(0, 0, 0, 3) // Default spacing of 3
 			//}
 		}
+
 		if c.ss.moveType == MT_H {
 			// Set opposing team's First Attack flag
 			if sys.firstAttack[2] == 0 && (c.teamside == 0 || c.teamside == 1) {
@@ -12284,6 +12364,7 @@ func (c *Char) tick() {
 	if c.scf(SCF_disabled) {
 		return
 	}
+
 	// Step animation
 	if c.acttmp > 0 || !c.pauseBool && (!c.hitPause() || c.asf(ASF_animatehitpause)) {
 		// Update reference frame first
@@ -12298,22 +12379,25 @@ func (c *Char) tick() {
 		// https://github.com/ikemen-engine/Ikemen-GO/issues/1550
 		c.animBackup = c.anim
 	}
+
+	// Step bindTime
 	if c.bindTime > 0 {
 		if c.isTargetBound() {
 			bt := sys.playerID(c.bindToId)
-			if bt == nil || bt.csf(CSF_gethit) || bt.csf(CSF_destroy) {
-				// SelfState if binder gets hit or destroys self
+			if bt == nil || bt.csf(CSF_gethit) {
+				// SelfState if binder is missing or got hit. Destroyed case handled in destroy()
 				// https://github.com/ikemen-engine/Ikemen-GO/issues/2347
 				c.selfState(5050, -1, -1, -1, "")
 				c.gethitBindClear()
 			} else if !bt.pause() {
-				//setBindTime is not used here because the CSF_destroy flag may be enabled in a frame with BindTime=0. If bindTime becomes 0, the setBindTime processing will be performed later
-				c.bindTime -= 1
-				//c.setBindTime(c.bindTime - 1)
+				// Use setBindTime so that the bind variables are cleared when the timer reaches 0
+				// Manual decrement was only needed so setBindTime() would not clear the bind for a dying helper
+				// destroy() handles that case now
+				// c.bindTime -= 1
+				c.setBindTime(c.bindTime - 1)
 			}
 		} else {
 			if !c.pause() {
-				// c.bindTime -= 1
 				c.setBindTime(c.bindTime - 1)
 				// The fix below was necessary before because bindTime should not be decremented directly but rather via setBindTime
 				// Fixes BindToRoot/BindToParent of 1 immediately after PosSets (MUGEN 1.0/1.1 behavior)
@@ -12324,6 +12408,7 @@ func (c *Char) tick() {
 			}
 		}
 	}
+
 	if c.cmd == nil {
 		if c.keyctrl[0] {
 			c.cmd = make([]CommandList, len(sys.chars))
@@ -13192,9 +13277,7 @@ func (cl *CharList) action() {
 	// We use an index-based loop instead of a range so that appended helpers are also processed
 	for i := 0; i < len(cl.runOrder); i++ {
 		c := cl.runOrder[i]
-		if !c.csf(CSF_destroy) {
-			c.actionRun()
-		}
+		c.actionRun()
 	}
 
 	// Finish performing character actions
@@ -13806,21 +13889,22 @@ func (cl *CharList) pushDetection(getter *Char) {
 			c.pushed, getter.pushed = true, true
 
 			// Determine who gets pushed and the multipliers
-			var cfactor, gfactor float32
+			var cFactor, gFactor float32
 			switch {
 			case c.pushPriority > getter.pushPriority:
-				cfactor = 0
-				gfactor = getter.size.pushfactor // Maybe use other character's constant?
+				cFactor = 0
+				gFactor = getter.size.pushfactor // Maybe use other character's constant?
 			case c.pushPriority < getter.pushPriority:
-				cfactor = c.size.pushfactor
-				gfactor = 0
+				cFactor = c.size.pushfactor
+				gFactor = 0
 			default:
 				// Compare player weights and apply pushing factors
 				// Weight determines which player is pushed more. Factor determines how fast the player overlap is resolved
-				cfactor = float32(getter.size.weight) / float32(c.size.weight+getter.size.weight)
-				gfactor = float32(c.size.weight) / float32(c.size.weight+getter.size.weight) * getter.size.pushfactor
-				cfactor *= c.size.pushfactor
-				gfactor *= getter.size.pushfactor
+				// We use the average factor so that the constant affects resolution speed without affecting who wins the struggle
+				averageFactor := (c.size.pushfactor + getter.size.pushfactor) / 2
+				totalWeight := float32(c.size.weight + getter.size.weight)
+				cFactor = averageFactor * float32(getter.size.weight) / totalWeight
+				gFactor = averageFactor * float32(c.size.weight) / totalWeight
 			}
 
 			// Determine in which axes to push the players
@@ -13890,17 +13974,17 @@ func (cl *CharList) pushDetection(getter *Char) {
 
 				if tmp > 0 {
 					if c.pushPriority >= getter.pushPriority {
-						getter.pos[0] -= overlapX * gfactor / getter.localscl
+						getter.pos[0] -= overlapX * gFactor / getter.localscl
 					}
 					if c.pushPriority <= getter.pushPriority {
-						c.pos[0] += overlapX * cfactor / c.localscl
+						c.pos[0] += overlapX * cFactor / c.localscl
 					}
 				} else {
 					if c.pushPriority >= getter.pushPriority {
-						getter.pos[0] += overlapX * gfactor / getter.localscl
+						getter.pos[0] += overlapX * gFactor / getter.localscl
 					}
 					if c.pushPriority <= getter.pushPriority {
-						c.pos[0] -= overlapX * cfactor / c.localscl
+						c.pos[0] -= overlapX * cFactor / c.localscl
 					}
 				}
 
@@ -13918,17 +14002,17 @@ func (cl *CharList) pushDetection(getter *Char) {
 			if pushz {
 				if gposz < cposz {
 					if c.pushPriority >= getter.pushPriority {
-						getter.pos[2] -= overlapZ * gfactor / getter.localscl
+						getter.pos[2] -= overlapZ * gFactor / getter.localscl
 					}
 					if c.pushPriority <= getter.pushPriority {
-						c.pos[2] += overlapZ * cfactor / c.localscl
+						c.pos[2] += overlapZ * cFactor / c.localscl
 					}
 				} else if gposz > cposz {
 					if c.pushPriority >= getter.pushPriority {
-						getter.pos[2] += overlapZ * gfactor / getter.localscl
+						getter.pos[2] += overlapZ * gFactor / getter.localscl
 					}
 					if c.pushPriority <= getter.pushPriority {
-						c.pos[2] -= overlapZ * cfactor / c.localscl
+						c.pos[2] -= overlapZ * cFactor / c.localscl
 					}
 				}
 
@@ -13939,6 +14023,20 @@ func (cl *CharList) pushDetection(getter *Char) {
 				// Update position interpolation
 				c.setPosZ(c.pos[2], true)
 				getter.setPosZ(getter.pos[2], true)
+			}
+		}
+	}
+}
+
+// Re-applies binding positions to players whose binding targets were pushed
+// Mugen did not do this, making helper binding more frustrating than it needed to be
+func (cl *CharList) rebindIfPushed() {
+	for _, c := range cl.runOrder {
+		if c.bindTime != 0 && c.bindToId >= 0 {
+			bt := sys.playerID(c.bindToId)
+			// If both were pushed we do nothing
+			if bt != nil && bt.pushed && !c.pushed {
+				c.bindToPlayer(bt)
 			}
 		}
 	}
@@ -13987,6 +14085,9 @@ func (cl *CharList) collisionDetection() {
 	for _, idx := range sortedOrder {
 		cl.pushDetection(cl.runOrder[idx])
 	}
+
+	// Rebind players if necessary
+	cl.rebindIfPushed()
 
 	// Player hit detection
 	for _, idx := range sortedOrder {

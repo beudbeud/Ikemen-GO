@@ -215,13 +215,12 @@ func loadFightFx(def string, isCharFX bool, isMainThread bool) error {
 }
 
 type FSText struct {
-	font       [8]int32 // to match Lua arg count regardless
-	text       string
-	lay        Layout
-	palfx      *PalFX
-	frgba      [4]float32 // ttf fonts
-	forcecolor bool
-	pfxinit    int32
+	font    [8]int32 // to match Lua arg count regardless
+	text    string
+	lay     Layout
+	palfx   *PalFX
+	frgba   [4]float32 // ttf fonts
+	pfxinit int32
 }
 
 func newFSText(align int32) *FSText {
@@ -267,14 +266,12 @@ func readFSText(pre string, is IniSection, str string, ln int16, f map[int]*Fnt,
 }
 
 func (txt *FSText) SetColor(r, g, b, a int32) {
-	txt.forcecolor = true
 	txt.palfx.setColor(r, g, b)
-	txt.frgba = [...]float32{float32(r) / 255, float32(g) / 255,
-		float32(b) / 255, float32(a) / 255}
+	txt.frgba = [4]float32{float32(r) / 255, float32(g) / 255, float32(b) / 255, float32(a) / 255}
 }
 
 func (txt *FSText) step() {
-	if txt.palfx != nil && !txt.forcecolor {
+	if txt.palfx != nil {
 		txt.palfx.step()
 	}
 }
@@ -662,8 +659,9 @@ func (lb *LifeBar) draw(layerno int16, charpn int, lbr *LifeBar, f map[int]*Fnt)
 	redlife := float32(refChar.redLife) / float32(refChar.lifeMax)
 	redval := refChar.redLife - refChar.life
 
-	var MidPosX = (float32(sys.gameWidth-320) / 2)
-	var MidPosY = (float32(sys.gameHeight-240) / 2)
+	// Truncate to int32 first, like before PR #3575, to avoid an off-by-one error
+	var MidPosX = float32(int32(sys.gameWidth)-320) / 2
+	var MidPosY = float32(int32(sys.gameHeight)-240) / 2
 	// Calculates the clipping rectangle based on current bar settings
 	getBarClipRect := func(life float32) [4]int32 {
 		r := sys.scrrect
@@ -1101,8 +1099,9 @@ func (pb *PowerBar) draw(layerno int16, charpn int, pbr *PowerBar, f map[int]*Fn
 		power = float32(pbval)/1000 - Min(float32(level), float32(refChar.powerMax)/1000-1)
 	}
 
-	var MidPosX = (float32(sys.gameWidth-320) / 2)
-	var MidPosY = (float32(sys.gameHeight-240) / 2)
+	// Truncate to int32 first, like before PR #3575, to avoid an off-by-one error
+	var MidPosX = float32(int32(sys.gameWidth)-320) / 2
+	var MidPosY = float32(int32(sys.gameHeight)-240) / 2
 	getBarClipRect := func(power float32) [4]int32 {
 		r := sys.scrrect
 
@@ -1353,8 +1352,9 @@ func (gb *GuardBar) draw(layerno int16, charpn int, gbr *GuardBar, f map[int]*Fn
 		points = 1 - points
 	}
 
-	var MidPosX = (float32(sys.gameWidth-320) / 2)
-	var MidPosY = (float32(sys.gameHeight-240) / 2)
+	// Truncate to int32 first, like before PR #3575, to avoid an off-by-one error
+	var MidPosX = float32(int32(sys.gameWidth)-320) / 2
+	var MidPosY = float32(int32(sys.gameHeight)-240) / 2
 	getBarClipRect := func(points float32) [4]int32 {
 		r := sys.scrrect
 
@@ -1598,8 +1598,9 @@ func (sb *StunBar) draw(layerno int16, charpn int, sbr *StunBar, f map[int]*Fnt)
 		points = 1 - points
 	}
 
-	var MidPosX = (float32(sys.gameWidth-320) / 2)
-	var MidPosY = (float32(sys.gameHeight-240) / 2)
+	// Truncate to int32 first, like before PR #3575, to avoid an off-by-one error
+	var MidPosX = float32(int32(sys.gameWidth)-320) / 2
+	var MidPosY = float32(int32(sys.gameHeight)-240) / 2
 	getBarClipRect := func(points float32) [4]int32 {
 		r := sys.scrrect
 
@@ -3107,6 +3108,8 @@ type FightScreenRound struct {
 	ko_sndtime        int32
 	koDisplayTimer    int32
 	koDisplayPhase    int32
+	outroStarted      bool
+	outroFrameAcc     float32
 	dko_time          int32
 	dko_sndtime       int32
 	dko_showdraw      bool
@@ -3173,8 +3176,9 @@ func newFightScreenRound(snd *Snd) *FightScreenRound {
 	}
 }
 
-func readLbFade(pre string, is IniSection, sff *Sff, at AnimationTable) *Fade {
+func readLbFade(pre string, is IniSection, sff *Sff, at AnimationTable, snd *Snd) *Fade {
 	fp := newFade()
+	fp.sndSource = snd
 	is.ReadI32(pre+"time", &fp.time)
 	is.ReadI32(pre+"col", &fp.col[0], &fp.col[1], &fp.col[2])
 	fp.colEncoded = uint32(fp.col[0]&0xff<<16 | fp.col[1]&0xff<<8 | fp.col[2]&0xff)
@@ -3399,8 +3403,8 @@ func readFightScreenRound(is IniSection,
 	ro.winType[WT_Teammate+WT_NumTypes] = readFSBgTextSnd("p2.teammate.", is, sff, at, 0, f)
 	ro.winType[WT_Perfect+WT_NumTypes] = readFSBgTextSnd("p2.perfect.", is, sff, at, 0, f)
 	ro.winType[WT_Clutch+WT_NumTypes] = readFSBgTextSnd("p2.clutch.", is, sff, at, 0, f)
-	ro.fadeIn = readLbFade("fadein.", is, sff, at)
-	ro.fadeOut = readLbFade("fadeout.", is, sff, at)
+	ro.fadeIn = readLbFade("fadein.", is, sff, at, snd)
+	ro.fadeOut = readLbFade("fadeout.", is, sff, at, snd)
 	is.ReadI32("shutter.time", &ro.shutter_time)
 	is.ReadI32("clutch.threshold", &ro.clutch_threshold)
 	var col [3]int32
@@ -3417,6 +3421,11 @@ func (ro *FightScreenRound) overTime() int32 {
 
 // Check is sys.intro timer should step
 func (ro *FightScreenRound) act() bool {
+	// Allow a pause-menu match exit to finish the regular fight fade.
+	if sys.endMatch && ro.fadeOut.isActive() {
+		ro.fadeOut.step()
+		return false
+	}
 	// Early exits
 	if (sys.paused && !sys.frameStepFlag) || sys.gsf(GSF_roundfreeze) {
 		return false
@@ -3427,7 +3436,7 @@ func (ro *FightScreenRound) act() bool {
 	} else if ro.fadeIn.isActive() {
 		ro.fadeIn.step()
 	}
-	if ro.shutterTimer > 0 {
+	if ro.shutterTimer > 0 && sys.tickNextFrame() {
 		// Signal system to skip intros when shutter is about to be fully closed
 		// This ensures the intros will skip even if/when the shutter updates at a different rate than characters
 		// https://github.com/ikemen-engine/Ikemen-GO/issues/2720
@@ -3436,6 +3445,24 @@ func (ro *FightScreenRound) act() bool {
 			ro.fadeIn.timeRemaining = 0
 		}
 		ro.shutterTimer--
+	}
+	// Keep round outro animations independent of gameplay slowdown.
+	if ro.outroStarted && sys.intro < 0 && !sys.motif.di.active && ro.shutterTimer <= 0 {
+		step := float32(1)
+		if !sys.frameStepFlag {
+			step = float32(sys.gameLogicSpeed()) / float32(sys.gameRenderSpeed())
+			if sys.nextAddTime > 1 {
+				step /= sys.nextAddTime
+			}
+		}
+		ro.outroFrameAcc += step
+		for ro.outroFrameAcc >= 1 {
+			ro.handleRoundOutro()
+			ro.outroFrameAcc--
+		}
+	}
+	if sys.intro < 0 && !sys.tickFrame() {
+		return false
 	}
 
 	// Pre-intro
@@ -3456,7 +3483,10 @@ func (ro *FightScreenRound) act() bool {
 		}
 		// Outro
 		if ro.fightDisplayPhase == 2 && sys.intro < 0 && (sys.finishType != FT_NotYet || sys.curRoundTime == 0) {
-			ro.handleRoundOutro()
+			if !ro.outroStarted {
+				ro.outroStarted = true
+				ro.handleRoundOutro()
+			}
 		} else {
 			return ro.fightDisplayPhase > 0
 		}
@@ -3848,6 +3878,8 @@ func (ro *FightScreenRound) reset() {
 	ro.roundDisplayTimer = 0
 	ro.fightDisplayTimer = 0
 	ro.koDisplayTimer = 0
+	ro.outroStarted = false
+	ro.outroFrameAcc = 0
 	ro.winDisplayTimer = 0
 	ro.roundDisplayPhase = 0
 	ro.fightDisplayPhase = 0
@@ -5567,7 +5599,7 @@ func (fs *FightScreen) visible() bool {
 		!sys.lifebarHide &&
 		!(sys.dialogueHideBars || sys.motif.di.active) &&
 		!(sys.motif.me.active && sys.motif.PauseMenu["pause_menu"].HideBars &&
-			(!sys.motif.me.closeRequested || sys.paused))
+			sys.motif.me.state != ME_ClosingIn)
 }
 
 func (fs *FightScreen) draw(layerno int16) {

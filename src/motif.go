@@ -2018,11 +2018,6 @@ func (m *Motif) mergeWithInheritance(specs []InheritSpec) {
 	defs := m.DefaultOnlyIni
 	merged := m.IniFile
 
-	isPreviewAnim := func(dstKey string) bool {
-		l := strings.ToLower(dstKey)
-		return strings.HasSuffix(l, ".palmenu.preview.anim")
-	}
-
 	get := func(f *ini.File, sec, key string) (string, bool) {
 		if f == nil {
 			return "", false
@@ -2045,6 +2040,21 @@ func (m *Motif) mergeWithInheritance(specs []InheritSpec) {
 	shouldSkip := func(fullKeyLower string) bool {
 		// Avoid inheriting dotted item/valuename lists which are consumed elsewhere.
 		return strings.Contains(fullKeyLower, ".itemname.") || strings.Contains(fullKeyLower, ".valuename.")
+	}
+
+	shouldSkipAnimSpr := func(dstPrefix, suf string) bool {
+		// Avoid inheriting anim/spr for parameters that represent optional independent elements.
+		if !strings.EqualFold(suf, "anim") && !strings.EqualFold(suf, "spr") {
+			return false
+		}
+
+		lowerPrefix := strings.ToLower(dstPrefix)
+		for _, prefix := range []string{".face.random.", ".face2.random.", ".face.slot.", ".face2.slot.", ".palmenu.preview."} {
+			if strings.Contains(lowerPrefix, prefix) {
+				return true
+			}
+		}
+		return false
 	}
 
 	// Ensure a section exists in the user ini when we need to mirror
@@ -2107,14 +2117,13 @@ func (m *Motif) mergeWithInheritance(specs []InheritSpec) {
 		for suf := range suffixes {
 			dstKey := sp.DstPrefix + suf
 			srcKey := sp.SrcPrefix + suf
-			// Skip face.random/face2.random and face.slot/face2.slot anim/spr inheritance
+			// Skip palmenu.preview anim/spr inheritance
 			lowerDst := strings.ToLower(sp.DstPrefix)
-			if (strings.Contains(lowerDst, ".face.random.") ||
-				strings.Contains(lowerDst, ".face2.random.") ||
-				strings.Contains(lowerDst, "face.slot.") ||
-				strings.Contains(lowerDst, "face2.slot.")) &&
-				(strings.EqualFold(suf, "anim") ||
-					strings.EqualFold(suf, "spr")) {
+			if strings.Contains(lowerDst, ".palmenu.preview.") &&
+				(strings.EqualFold(suf, "anim") || strings.EqualFold(suf, "spr")) {
+				continue
+			}
+			if shouldSkipAnimSpr(sp.DstPrefix, suf) {
 				continue
 			}
 			lowerFull := strings.ToLower(dstKey)
@@ -2130,18 +2139,6 @@ func (m *Motif) mergeWithInheritance(specs []InheritSpec) {
 						// Nothing to inherit here; keep the existing (possibly resolved) value.
 						continue
 					}
-				}
-			}
-
-			// palmenu.preview only inherits when palmenu.preview.anim is defined
-			if isPreviewAnim(dstKey) {
-				if v, ok := get(user, sp.DstSec, dstKey); ok {
-					tv := strings.TrimSpace(v)
-					if !IsInt(tv) || Atoi(tv) < 0 {
-						continue
-					}
-				} else {
-					continue
 				}
 			}
 
@@ -2171,16 +2168,13 @@ func (m *Motif) mergeWithInheritance(specs []InheritSpec) {
 				continue
 			}
 
-			// Remember only anim/spr values that were actually inherited into the destination.
+			// Remember only values that were actually inherited into the destination.
 			// Direct destination values from system.def must keep warning on missing sprites.
-			switch strings.ToLower(suf) {
-			case "anim", "spr":
-				switch src {
-				case srcUserSrc, srcDefSrc:
-					m.inheritedKeys[query] = true
-				default:
-					delete(m.inheritedKeys, query)
-				}
+			switch src {
+			case srcUserSrc, srcDefSrc:
+				m.inheritedKeys[query] = true
+			default:
+				delete(m.inheritedKeys, query)
 			}
 
 			// If a value comes from the user INI (directly or via src), copy it into m.UserIniFile
@@ -2985,6 +2979,13 @@ func (m *Motif) reset() {
 }
 
 func (m *Motif) step() {
+	if !m.me.active && !(sys.fightScreen.round.fadeOut.isActive() || sys.fightScreen.round.fadeIn.isActive()) {
+		if m.fadeOut.isActive() {
+			m.fadeOut.step()
+		} else if m.fadeIn.isActive() {
+			m.fadeIn.step()
+		}
+	}
 	if m.me.active {
 		m.me.step(m)
 	} else if sys.escExit() {
@@ -3026,49 +3027,16 @@ func (m *Motif) step() {
 
 // drawAspectBars renders black bars when the fight aspect and motif aspect differ.
 func (m *Motif) drawAspectBars() {
-	if !sys.shouldPersistMotifAspect() {
+	viewport, ok := sys.fightDrawClip()
+	if !ok {
 		return
 	}
-	fightAspect := sys.getFightAspect()
-	motifAspect := sys.getMotifAspect()
-
-	if fightAspect <= 0 || motifAspect <= 0 || fightAspect == motifAspect {
-		return
-	}
-
-	sw := sys.scrrect[2]
-	sh := sys.scrrect[3]
-
-	// Collect up to two bar rectangles (pillarbox or letterbox).
-	var rects [][4]int32
-
-	if fightAspect < motifAspect {
-		// Fight view is narrower than the motif (e.g. 4:3 fight on 16:9 motif):
-		// add vertical bars on the left and right.
-		contentWidth := int32(float32(sh) * fightAspect)
-		if contentWidth > 0 && contentWidth < sw {
-			offsetX := (sw - contentWidth) / 2
-			leftBar := [4]int32{0, 0, offsetX, sh}
-			rightBarWidth := sw - (offsetX + contentWidth)
-			if rightBarWidth < 0 {
-				rightBarWidth = 0
-			}
-			rightBar := [4]int32{offsetX + contentWidth, 0, rightBarWidth, sh}
-			rects = append(rects, leftBar, rightBar)
-		}
-	} else if fightAspect > motifAspect {
-		// Fight view is wider than the motif: add horizontal bars top and bottom.
-		contentHeight := int32(float32(sw) / fightAspect)
-		if contentHeight > 0 && contentHeight < sh {
-			offsetY := (sh - contentHeight) / 2
-			topBar := [4]int32{0, 0, sw, offsetY}
-			bottomBarHeight := sh - (offsetY + contentHeight)
-			if bottomBarHeight < 0 {
-				bottomBarHeight = 0
-			}
-			bottomBar := [4]int32{0, offsetY + contentHeight, sw, bottomBarHeight}
-			rects = append(rects, topBar, bottomBar)
-		}
+	screen := sys.scrrect
+	rects := [4][4]int32{
+		{screen[0], screen[1], viewport[0] - screen[0], screen[3]},
+		{viewport[0] + viewport[2], screen[1], screen[0] + screen[2] - viewport[0] - viewport[2], screen[3]},
+		{viewport[0], screen[1], viewport[2], viewport[1] - screen[1]},
+		{viewport[0], viewport[1] + viewport[3], viewport[2], screen[1] + screen[3] - viewport[1] - viewport[3]},
 	}
 
 	for _, r := range rects {
@@ -3099,8 +3067,8 @@ func (m *Motif) draw(layerno int16) {
 		defer sys.restoreAspectState(prev)
 	}
 	// Draw black bars if fight aspect and motif aspect differ.
-	if layerno == 1 && sys.shouldPersistMotifAspect() &&
-		(!sys.middleOfMatch() || m.me.active || m.di.active) {
+	if layerno == 1 && sys.shouldComposeFullResolution() &&
+		(!sys.middleOfMatch() || sys.motifOverlayActive()) {
 		m.drawAspectBars()
 	}
 	if m.ch.active {
@@ -3130,13 +3098,18 @@ func (m *Motif) draw(layerno int16) {
 	if m.me.active {
 		m.me.draw(m, layerno)
 	}
-	// Screen fading
-	if layerno == 3 {
-		if m.fadeOut.isActive() {
-			m.fadeOut.draw()
-		} else if m.fadeIn.isActive() {
-			m.fadeIn.draw()
-		}
+}
+
+func (m *Motif) drawFade() {
+	if m.shouldScopeMotifAspect() {
+		prev := sys.captureAspectState()
+		sys.setGameSize(sys.scrrect[2], sys.scrrect[3])
+		defer sys.restoreAspectState(prev)
+	}
+	if m.fadeOut.isActive() {
+		m.fadeOut.draw()
+	} else if m.fadeIn.isActive() {
+		m.fadeIn.draw()
 	}
 }
 
@@ -3301,21 +3274,28 @@ func (mo *Motif) sprintf(format string, args ...interface{}) string {
 	return fmt.Sprintf(fs, args...)
 }
 
+type MenuState int32
+
+const (
+	ME_OpeningOut MenuState = iota
+	ME_OpeningIn
+	ME_Open
+	ME_ClosingOut
+	ME_ClosingIn
+)
+
 type MotifMenu struct {
-	enabled        bool
-	active         bool
-	initialized    bool
-	counter        int32
-	endTimer       int32
-	closeRequested bool
-	reopenLock     bool
+	enabled     bool
+	active      bool
+	initialized bool
+	state       MenuState
+	reopenLock  bool
 }
 
 func (me *MotifMenu) reset(m *Motif) {
 	me.active = false
 	me.initialized = false
-	me.endTimer = -1
-	me.closeRequested = false
+	me.state = ME_OpeningOut
 	if err := sys.luaLState.DoString("menuReset()"); err != nil {
 		sys.luaLState.RaiseError("Error executing Lua code: %v\n", err.Error())
 	}
@@ -3328,19 +3308,20 @@ func (me *MotifMenu) menuOpenInputHeld(m *Motif) bool {
 		return true
 	}
 	// Also respect configured menu cancel/open bindings
-	if m != nil && m.PauseMenu != nil {
-		if pm := m.PauseMenu["pause_menu"]; pm != nil && pm.Enabled {
-			if sys.uiRawInput(pm.Menu.Cancel.Key, -1) {
-				return true
-			}
-		}
+	if pm := me.pauseMenu(m); pm != nil && pm.Enabled {
+		return sys.uiRawInput(pm.Menu.Cancel.Key, -1)
 	}
 	return false
 }
 
-func (me *MotifMenu) pauseMenuBase(m *Motif) *MenuInfoProperties {
+func (me *MotifMenu) pauseMenu(m *Motif) *MenuInfoProperties {
 	if m == nil || m.PauseMenu == nil {
 		return nil
+	}
+	if mode := strings.Join(strings.Fields(strings.ToLower(sys.gameMode)), "_"); mode != "" {
+		if pm := m.PauseMenu[mode+"_pause_menu"]; pm != nil {
+			return pm
+		}
 	}
 	if pm := m.PauseMenu["pause_menu"]; pm != nil {
 		return pm
@@ -3354,21 +3335,17 @@ func (me *MotifMenu) pauseMenuBase(m *Motif) *MenuInfoProperties {
 }
 
 func (me *MotifMenu) requestClose(m *Motif) {
-	if me.endTimer != -1 {
+	if !me.active || me.state >= ME_ClosingOut {
 		return
 	}
-	me.closeRequested = true
-	if !m.di.active {
-		sys.leaveMotifAspect()
+	if pm := me.pauseMenu(m); pm != nil {
+		pm.FadeOut.FadeData.init(m.fadeOut, false)
 	}
-	if pm := me.pauseMenuBase(m); pm != nil {
-		startFadeOut(pm.FadeOut.FadeData, m.fadeOut, false, m.fadePolicy)
-	}
-	me.endTimer = me.counter + m.fadeOut.timeRemaining
+	me.state = ME_ClosingOut
 }
 
 func (me *MotifMenu) init(m *Motif) {
-	pm := me.pauseMenuBase(m)
+	pm := me.pauseMenu(m)
 	if pm == nil || !pm.Enabled || !me.enabled {
 		me.initialized = true
 		return
@@ -3399,56 +3376,70 @@ func (me *MotifMenu) init(m *Motif) {
 		sys.endMatch = true
 		return
 	}
-	// If nothing requested opening, do nothing.
 	if !openPressed {
 		return
 	}
-	sys.enterMotifAspect()
 
-	if err := sys.luaLState.DoString("menuInit()"); err != nil {
-		sys.luaLState.RaiseError("Error executing Lua code: %v\n", err.Error())
-	}
-
-	pm.FadeIn.FadeData.init(m.fadeIn, true)
-	me.counter = 0
+	// Freeze the match first, then fade it to black before initializing the menu.
+	sys.paused = true
+	pm.FadeOut.FadeData.init(m.fadeOut, false)
 	me.active = true
 	me.initialized = true
-	me.closeRequested = false
-	me.endTimer = -1
+	me.state = ME_OpeningOut
 }
 
 func (me *MotifMenu) step(m *Motif) {
-	// Close only when requested by Lua (menuRun() returned false) or when ending the match.
-	if me.endTimer == -1 && (me.closeRequested || sys.endMatch) {
-		me.requestClose(m)
+	// Round state does not advance motif fades while the match is paused.
+	if m.fadeOut.isActive() {
+		m.fadeOut.step()
+	} else if m.fadeIn.isActive() {
+		m.fadeIn.step()
 	}
 
-	// Check if the sequence has ended
-	if me.endTimer != -1 && me.counter >= me.endTimer {
-		if m.fadeOut != nil {
-			m.fadeOut.reset()
+	pm := me.pauseMenu(m)
+	switch me.state {
+	case ME_OpeningOut:
+		if m.fadeOut.isActive() {
+			return
 		}
-		me.active = false
-		me.closeRequested = false
+		if err := sys.luaLState.DoString("menuInit()"); err != nil {
+			sys.luaLState.RaiseError("Error executing Lua code: %v\n", err.Error())
+		}
+		if pm != nil {
+			pm.FadeIn.FadeData.init(m.fadeIn, true)
+		}
+		me.state = ME_OpeningIn
+	case ME_OpeningIn:
+		if !m.fadeIn.isActive() {
+			me.state = ME_Open
+		}
+	case ME_ClosingOut:
+		if m.fadeOut.isActive() {
+			return
+		}
+		if pm != nil {
+			pm.FadeIn.FadeData.init(m.fadeIn, true)
+		}
+		me.state = ME_ClosingIn
+	case ME_ClosingIn:
+		if m.fadeIn.isActive() {
+			return
+		}
 		me.reopenLock = true
 		me.reset(m)
 		sys.paused = false
-		return
 	}
-
-	// Increment counter
-	me.counter++
 }
 
 // runLua executes the pause-menu Lua loop.
 func (me *MotifMenu) runLua(m *Motif) {
-	// Once closing has started, stop running the Lua menu loop so it can't keep drawing/flickering.
-	if me.endTimer != -1 {
+	// Draw the menu during its fade-in and fade-out, but not while the match is on screen.
+	if me.state == ME_OpeningOut || me.state == ME_ClosingIn {
 		return
 	}
 	if ok, err := ExecFunc(sys.luaLState, "menuRun"); err != nil {
 		sys.luaLState.RaiseError("Error executing Lua code: %v\n", err.Error())
-	} else if !ok {
+	} else if !ok && !sys.endMatch {
 		me.requestClose(m)
 	}
 }
@@ -3474,7 +3465,6 @@ func (ch *MotifChallenger) reset(m *Motif) {
 	ch.initialized = false
 	ch.endTimer = -1
 	ch.controllerNo = -1
-	//sys.leaveMotifAspect()
 }
 
 func (ch *MotifChallenger) init(m *Motif) {
@@ -3492,7 +3482,6 @@ func (ch *MotifChallenger) init(m *Motif) {
 		return
 	}
 	ch.controllerNo = controllerNo
-	//sys.enterMotifAspect()
 
 	if err := sys.luaLState.DoString("hook.run('game.challenger_init')"); err != nil {
 		sys.luaLState.RaiseError("Error executing Lua hook: %s\n%v", "game.challenger_init", err.Error())
@@ -3515,6 +3504,7 @@ func (ch *MotifChallenger) init(m *Motif) {
 }
 
 func (ch *MotifChallenger) step(m *Motif) {
+	m.ChallengerBgDef.BGDef.step()
 	if ch.counter > 0 {
 		if err := sys.luaLState.DoString("hook.run('game.challenger')"); err != nil {
 			sys.luaLState.RaiseError("Error executing Lua hook: %s\n%v", "game.challenger", err.Error())
@@ -3605,7 +3595,6 @@ func (co *MotifContinue) reset(m *Motif) {
 	co.endTimer = -1
 	co.waitTimer = 0
 	co.showEndAnim = false
-	sys.leaveMotifAspect()
 }
 
 func (co *MotifContinue) extractAndSortKeysDescending(m *Motif) []string {
@@ -3640,7 +3629,6 @@ func (co *MotifContinue) init(m *Motif) {
 		co.initialized = true
 		return
 	}
-	sys.enterMotifAspect()
 	if err := sys.luaLState.DoString("hook.run('game.continue_init')"); err != nil {
 		sys.luaLState.RaiseError("Error executing Lua hook: %s\n%v", "game.continue_init", err.Error())
 	}
@@ -3744,6 +3732,7 @@ func (co *MotifContinue) playCounterSounds(m *Motif) {
 }
 
 func (co *MotifContinue) step(m *Motif) {
+	m.ContinueBgDef.BGDef.step()
 	if co.counter > 0 {
 		if err := sys.luaLState.DoString("hook.run('game.continue')"); err != nil {
 			sys.luaLState.RaiseError("Error executing Lua hook: %s\n%v", "game.continue", err.Error())
@@ -3910,8 +3899,9 @@ func (de *MotifDemo) init(m *Motif) {
 
 	de.counter = 0
 
-	// Override lifebar fading
-	m.DemoMode.FadeIn.FadeData.init(sys.fightScreen.round.fadeIn, true)
+	sys.fightScreen.round.fadeIn.reset()
+	sys.fightScreen.round.fadeOut.reset()
+	m.DemoMode.FadeIn.FadeData.init(m.fadeIn, true)
 
 	de.active = true
 	de.initialized = true
@@ -3921,16 +3911,15 @@ func (de *MotifDemo) step(m *Motif) {
 	if de.endTimer == -1 {
 		cancel := (m.AttractMode.Enabled && sys.credits > 0) || (!m.AttractMode.Enabled && sys.uiRawInput(m.DemoMode.Cancel.Key, -1))
 		if de.counter == m.DemoMode.Fight.EndTime || cancel {
-			startFadeOut(m.DemoMode.FadeOut.FadeData, sys.fightScreen.round.fadeOut, false, m.fadePolicy)
-			de.endTimer = de.counter + sys.fightScreen.round.fadeOut.timeRemaining
+			m.fadeIn.reset()
+			startFadeOut(m.DemoMode.FadeOut.FadeData, m.fadeOut, false, m.fadePolicy)
+			de.endTimer = de.counter + m.fadeOut.timeRemaining
 		}
 	}
 
 	// Check if the sequence has ended
 	if de.endTimer != -1 && de.counter >= de.endTimer {
-		if sys.fightScreen.round.fadeOut != nil {
-			sys.fightScreen.round.fadeOut.reset()
-		}
+		m.fadeOut.reset()
 		de.active = false
 		sys.endMatch = true
 		return
@@ -4253,8 +4242,6 @@ func (di *MotifDialogue) reset(m *Motif) {
 			pn:  -1,
 		}
 	}
-
-	//sys.leaveMotifAspect()
 }
 
 func (di *MotifDialogue) clear(m *Motif) {
@@ -4274,7 +4261,6 @@ func (di *MotifDialogue) clear(m *Motif) {
 	if m.DialogueInfo.P2.Face.Active.AnimData != nil {
 		m.DialogueInfo.P2.Face.Active.AnimData.anim = nil
 	}
-	sys.leaveMotifAspect()
 }
 
 func (di *MotifDialogue) initDefaults(m *Motif) {
@@ -4371,7 +4357,6 @@ func (di *MotifDialogue) init(m *Motif, matchEnd bool) {
 	if matchEnd && sys.fightScreen.round.fadeOut.isActive() {
 		sys.fightScreen.round.fadeOut.reset()
 	}
-	sys.enterMotifAspect()
 
 	lines, pn, _ := di.getDialogueLines()
 	di.char = sys.chars[pn-1][0]
@@ -5408,6 +5393,9 @@ func (hi *MotifHiscore) init(m *Motif, mode string, place, endTime int32, noFade
 }
 
 func (hi *MotifHiscore) step(m *Motif) {
+	if !hi.noBgs {
+		m.HiscoreBgDef.BGDef.step()
+	}
 	if hi.counter > 0 {
 		if err := sys.luaLState.DoString("hook.run('game.hiscore')"); err != nil {
 			sys.luaLState.RaiseError("Error executing Lua hook: %s\n%v", "game.hiscore", err.Error())
@@ -5877,7 +5865,6 @@ func (vi *MotifVictory) reset(m *Motif) {
 	m.VictoryScreen.WinQuote.TextSpriteData.textDelay = 0
 	vi.endTimer = -1
 	vi.clear(m)
-	sys.leaveMotifAspect()
 }
 
 func (vi *MotifVictory) clearProps(props *PlayerVictoryProperties) {
@@ -6164,8 +6151,6 @@ func (vi *MotifVictory) init(m *Motif) {
 		}
 	}
 
-	sys.enterMotifAspect()
-
 	//fmt.Printf("[Victory] init: enabled=%v winnerTeam=%d cpu.enabled=%v p1.num=%d p2.num=%d\n", m.VictoryScreen.Enabled, sys.winnerTeam(), m.VictoryScreen.Cpu.Enabled, m.VictoryScreen.P1.Num, m.VictoryScreen.P2.Num)
 
 	// Apply to motif slots: winners -> P1,P3,P5,P7 ; losers -> P2,P4,P6,P8
@@ -6252,6 +6237,7 @@ func (vi *MotifVictory) init(m *Motif) {
 }
 
 func (vi *MotifVictory) step(m *Motif) {
+	m.VictoryBgDef.BGDef.step()
 	if vi.counter > 0 {
 		if err := sys.luaLState.DoString("hook.run('game.victory')"); err != nil {
 			sys.luaLState.RaiseError("Error executing Lua hook: %s\n%v", "game.victory", err.Error())
@@ -6605,7 +6591,6 @@ type MotifWin struct {
 func (wi *MotifWin) assignStates(p1States, p2States [4][]int32) {
 	wi.p1States = p1States
 	wi.p2States = p2States
-	sys.leaveMotifAspect()
 }
 
 func (wi *MotifWin) reset(m *Motif) {
@@ -6655,7 +6640,6 @@ func (wi *MotifWin) init(m *Motif) {
 		wi.initialized = true
 		return
 	}
-	sys.enterMotifAspect()
 
 	if !wi.soundsEnabled {
 		sys.clearAllSound()
@@ -6816,6 +6800,13 @@ func (wi *MotifWin) initWinScreen(m *Motif) bool {
 
 // Process the step logic for MotifWin
 func (wi *MotifWin) step(m *Motif) {
+	if wi.resultsScreen != nil {
+		if wi.resultsBgDef != nil && wi.resultsBgDef.BGDef != nil {
+			wi.resultsBgDef.BGDef.step()
+		}
+	} else {
+		m.WinBgDef.BGDef.step()
+	}
 	if wi.counter > 0 {
 		if err := sys.luaLState.DoString("hook.run('game.result')"); err != nil {
 			sys.luaLState.RaiseError("Error executing Lua hook: %s\n%v", "game.result", err.Error())
