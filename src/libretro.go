@@ -301,6 +301,13 @@ func retro_run() {
 		// the only moment it is safe to write the shared input state.
 		libretroReadInput()
 		lr.frameReq <- struct{}{}
+		if !lr.stallStart.IsZero() && time.Since(lr.stallStart) >= time.Second {
+			// A load just ended: hand its garbage back to the OS right away
+			// (a forced GC is cheap next to the seconds the load took), and
+			// log where the memory actually sits.
+			debug.FreeOSMemory()
+			libretroLogMemory()
+		}
 		lr.stallStart, lr.stallShown = time.Time{}, 0
 	case <-time.After(libretroFrameTimeout):
 		// Still loading. A nil frame tells the frontend to repeat the last one,
@@ -578,6 +585,30 @@ func libretroDefaultMemoryLimit() {
 		}
 		return
 	}
+}
+
+// libretroLogMemory prints the Go heap next to the process RSS: their gap is
+// what lives outside the collector -- mostly the GPU's shared-memory textures.
+func libretroLogMemory() {
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	rss := "?"
+	if b, err := os.ReadFile("/proc/self/status"); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			v, ok := strings.CutPrefix(line, "VmRSS:")
+			if !ok {
+				continue
+			}
+			if f := strings.Fields(v); len(f) > 0 {
+				if kb, err := strconv.ParseInt(f[0], 10, 64); err == nil {
+					rss = fmt.Sprintf("%dMiB", kb>>10)
+				}
+			}
+			break
+		}
+	}
+	fmt.Fprintf(os.Stderr, "Ikemen GO: memory after load: Go heap %dMiB (runtime holds %dMiB), process RSS %s\n",
+		ms.HeapAlloc>>20, ms.HeapSys>>20, rss)
 }
 
 // libretroSpriteDetail honours the "Sprite detail" core option. "Auto" judges
