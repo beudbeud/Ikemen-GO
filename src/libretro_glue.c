@@ -50,8 +50,8 @@ static struct retro_core_option_v2_definition ik_option_defs[] = {
 	  "and sound channels. Values already lower in the pack's config are kept. "
 	  "Applied when content loads.",
 	  NULL, "system",
-	  { { "Off", NULL }, { "On", NULL }, { NULL, NULL } },
-	  "Off" },
+	  { { "On", NULL }, { "Off", NULL }, { NULL, NULL } },
+	  "On" },
 	{ "ikemen_go_resolution",
 	  "Video > Resolution", "Resolution",
 	  "Run the game at this resolution, the way editing GameWidth/GameHeight "
@@ -165,7 +165,7 @@ static const struct retro_variable ik_options[] = {
 	{ "ikemen_go_rgb_filter",
 	  "Smooth true-color sprites; Content config|On|Off" },
 	{ "ikemen_go_ram_saver",
-	  "RAM saver; Off|On" },
+	  "RAM saver; On|Off" },
 	{ "ikemen_go_debug",
 	  "Debug keys; Off|On" },
 	{ "ikemen_go_difficulty",
