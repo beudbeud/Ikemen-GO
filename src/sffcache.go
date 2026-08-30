@@ -17,6 +17,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -263,24 +264,42 @@ func sffCacheStore(filename string, char, isActPal bool, s *Sff,
 
 // --- load -----------------------------------------------------------------
 
+// sfcReader streams the cache file instead of holding it whole: each pixel
+// blob owns its allocation, so a queued texture upload pins only its own
+// sprite, not a several-hundred-MB file.
 type sfcReader struct {
-	b   []byte
-	off int
+	r   *bufio.Reader
+	tmp [8]byte
 	err bool
 }
 
 func (r *sfcReader) bytes(n int) []byte {
-	if r.err || n < 0 || r.off+n > len(r.b) {
+	if r.err || n < 0 || n > 1<<28 { // corrupt length must not OOM
 		r.err = true
 		return nil
 	}
-	b := r.b[r.off : r.off+n]
-	r.off += n
+	b := make([]byte, n)
+	if _, err := io.ReadFull(r.r, b); err != nil {
+		r.err = true
+		return nil
+	}
 	return b
 }
 
+// small reads n <= 8 bytes into a scratch buffer only valid until the next read.
+func (r *sfcReader) small(n int) []byte {
+	if r.err {
+		return nil
+	}
+	if _, err := io.ReadFull(r.r, r.tmp[:n]); err != nil {
+		r.err = true
+		return nil
+	}
+	return r.tmp[:n]
+}
+
 func (r *sfcReader) u16() uint16 {
-	b := r.bytes(2)
+	b := r.small(2)
 	if b == nil {
 		return 0
 	}
@@ -288,7 +307,7 @@ func (r *sfcReader) u16() uint16 {
 }
 
 func (r *sfcReader) u32() uint32 {
-	b := r.bytes(4)
+	b := r.small(4)
 	if b == nil {
 		return 0
 	}
@@ -298,7 +317,7 @@ func (r *sfcReader) u32() uint32 {
 func (r *sfcReader) i32() int32 { return int32(r.u32()) }
 
 func (r *sfcReader) i64() int64 {
-	b := r.bytes(8)
+	b := r.small(8)
 	if b == nil {
 		return 0
 	}
@@ -327,17 +346,18 @@ func sffCacheLoad(filename string, char, isActPal bool) *Sff {
 	if path == "" {
 		return nil
 	}
-	buf, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil
 	}
+	defer f.Close()
 	start := time.Now()
 	drop := func() *Sff {
 		os.Remove(path)
 		return nil
 	}
 
-	r := &sfcReader{b: buf}
+	r := &sfcReader{r: bufio.NewReaderSize(f, 1<<20)}
 	if string(r.bytes(len(sffCacheMagic))) != sffCacheMagic {
 		return drop()
 	}
