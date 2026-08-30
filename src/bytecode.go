@@ -743,6 +743,9 @@ const (
 	OC_ex_alpha_s
 	OC_ex_alpha_d
 	OC_ex_selfcommand
+	// Deprecated triggers kept for packs predating their removal
+	OC_ex_getplayerid
+	OC_ex_localscale
 )
 const (
 	OC_ex2_envshakevar_time OpCode = iota
@@ -3460,6 +3463,10 @@ func (be BytecodeExp) run_ex(c *Char, i *int, oc *Char) {
 		// This is because in a custom state this trigger will be used to know the enemy's version rather than our own
 	case OC_ex_mugenversion_minor:
 		sys.bcStack.PushI(int32(c.gi().mugenver[1]))
+	case OC_ex_getplayerid:
+		sys.bcStack.Top().SetI(c.getPlayerID(int(sys.bcStack.Top().ToI())))
+	case OC_ex_localscale:
+		sys.bcStack.PushF(c.localscl)
 	case OC_ex_pausetime:
 		sys.bcStack.PushI(c.pauseTimeTrigger())
 	case OC_ex_physics:

@@ -260,6 +260,7 @@ var triggerMap = map[string]int{
 	"gametime":          1,
 	"gamewidth":         1,
 	"gethitvar":         1,
+	"getplayerid":       1,
 	"hitbyattr":         1,
 	"hitcount":          1,
 	"hitdefattr":        1,
@@ -366,6 +367,7 @@ var triggerMap = map[string]int{
 	"angle":              1,
 	"xangle":             1,
 	"yangle":             1,
+	"animelemlength":     1,
 	"animelemvar":        1,
 	"animlength":         1,
 	"animplayerno":       1,
@@ -419,6 +421,8 @@ var triggerMap = map[string]int{
 	"layerno":            1,
 	"lerp":               1,
 	"localcoord":         1,
+	"localscale":         1,
+	"majorversion":       1,
 	"map":                1,
 	"max":                1,
 	"memberno":           1,
@@ -4907,6 +4911,18 @@ func (c *CharCompiler) expValue(out *BytecodeExp, in *string,
 		default:
 			return bvNone(), Error("Invalid LocalCoord argument: " + c.token)
 		}
+	// Deprecated triggers kept as aliases so packs predating their removal still compile
+	case "animelemlength": // = animelemvar(time)
+		out.append(OC_ex_, OC_ex_animelemvar_time)
+	case "getplayerid":
+		if _, err := c.oneArg(out, in, rd, true); err != nil {
+			return bvNone(), err
+		}
+		out.append(OC_ex_, OC_ex_getplayerid)
+	case "localscale":
+		out.append(OC_ex_, OC_ex_localscale)
+	case "majorversion": // = mugenversion(major)
+		out.append(OC_ex_, OC_ex_mugenversion_major)
 	case "map":
 		if err := c.checkOpeningParenthesis(in); err != nil {
 			return bvNone(), err

@@ -5415,14 +5415,13 @@ func (c *Char) gameWidth() float32 {
 	return c.screenWidth() / sys.cam.Scale
 }
 
-/*
+// Backs the deprecated GetPlayerID trigger, kept for packs predating its removal
 func (c *Char) getPlayerID(pn int) int32 {
 	if pn >= 1 && pn <= len(sys.chars) && len(sys.chars[pn-1]) > 0 {
 		return sys.chars[pn-1][0].id
 	}
 	return 0
 }
-*/
 
 func (c *Char) runOrderTrigger() int32 {
 	for i, ref := range sys.charList.runOrder {
