@@ -569,6 +569,11 @@ type Renderer_GLES32 struct {
 	// glslVersion is the "#version" line compileShader prepends, picked from
 	// the context in Init.
 	glslVersion string
+	// Double-buffered pixel-pack buffers for the libretro async readback.
+	pboIDs   [2]uint32
+	pboSize  int
+	pboValid [2]bool
+	pboCur   int
 	GLES32State
 }
 type GLES32State struct {
@@ -1765,6 +1770,58 @@ func (r *Renderer_GLES32) ReadPixelsBGRA(data []uint8, width, height int) bool {
 	}
 	gl.ReadPixels(0, 0, int32(width), int32(height), glBGRA, gl.UNSIGNED_BYTE, unsafe.Pointer(&data[0]))
 	return gl.GetError() == gl.NO_ERROR
+}
+
+// ReadPixelsAsync queues an asynchronous readback of the current frame into a
+// pixel-pack buffer and hands the PREVIOUS frame's pixels (RGBA, bottom-up) to
+// consume -- so the GPU never has to stall for this frame's pixels, at the
+// price of one frame of latency. Returns (supported, consumed): supported
+// false means the caller should fall back to the synchronous path for good;
+// consumed false with supported true is the warm-up frame after a start or a
+// resize, where no previous frame exists yet.
+func (r *Renderer_GLES32) ReadPixelsAsync(width, height int, consume func(rgba []byte)) (bool, bool) {
+	sz := width * height * 4
+	if r.pboSize != sz {
+		if r.pboIDs[0] != 0 {
+			gl.DeleteBuffers(2, &r.pboIDs[0])
+		}
+		gl.GenBuffers(2, &r.pboIDs[0])
+		for i := 0; i < 2; i++ {
+			gl.BindBuffer(gl.PIXEL_PACK_BUFFER, r.pboIDs[i])
+			gl.BufferData(gl.PIXEL_PACK_BUFFER, sz, nil, gl.STREAM_READ)
+		}
+		r.pboSize = sz
+		r.pboValid[0], r.pboValid[1] = false, false
+		r.pboCur = 0
+	}
+
+	gl.BindFramebuffer(gl.READ_FRAMEBUFFER, 0)
+	for i := 0; i < 8 && gl.GetError() != gl.NO_ERROR; i++ {
+		// drain stale errors so the check below is attributable to this read
+	}
+	gl.BindBuffer(gl.PIXEL_PACK_BUFFER, r.pboIDs[r.pboCur])
+	gl.ReadPixels(0, 0, int32(width), int32(height), gl.RGBA, gl.UNSIGNED_BYTE, nil)
+	if gl.GetError() != gl.NO_ERROR {
+		gl.BindBuffer(gl.PIXEL_PACK_BUFFER, 0)
+		gl.DeleteBuffers(2, &r.pboIDs[0])
+		r.pboIDs[0], r.pboIDs[1], r.pboSize = 0, 0, 0
+		return false, false
+	}
+	r.pboValid[r.pboCur] = true
+
+	prev := r.pboCur ^ 1
+	consumed := false
+	if r.pboValid[prev] {
+		gl.BindBuffer(gl.PIXEL_PACK_BUFFER, r.pboIDs[prev])
+		if ptr := gl.MapBufferRange(gl.PIXEL_PACK_BUFFER, 0, sz, gl.MAP_READ_BIT); ptr != nil {
+			consume(unsafe.Slice((*byte)(ptr), sz))
+			gl.UnmapBuffer(gl.PIXEL_PACK_BUFFER)
+			consumed = true
+		}
+	}
+	gl.BindBuffer(gl.PIXEL_PACK_BUFFER, 0)
+	r.pboCur = prev
+	return true, consumed
 }
 
 func (r *Renderer_GLES32) EnableScissor(x, y, width, height int32) {

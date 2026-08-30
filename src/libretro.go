@@ -59,6 +59,7 @@ var lr struct {
 	out        []uint8 // XRGB8888, top-down: what the frontend sees
 
 	bgraTried, bgraOK bool // whether the driver accepts a BGRA readback
+	pboFailed         bool // async PBO readback refused: stay on the sync path
 
 	applied       map[string]string // option values the running engine was built with
 	warnedOptions bool              // an "applies after restart" message is on screen
@@ -335,19 +336,37 @@ func libretroPresentFrame() {
 		lr.raw = make([]uint8, w*h*4)
 		lr.out = make([]uint8, w*h*4)
 	}
-	// A BGRA readback is already XRGB8888, leaving only the row flip; fall
-	// back to RGBA plus the CPU channel swap when the driver refuses (checked
-	// on every read: the first one decides, a later failure self-heals).
-	// Vulkan reads back top-down RGBA and always takes the fallback path.
-	if r, ok := gfx.(bgraReader); ok && (!lr.bgraTried || lr.bgraOK) {
-		lr.bgraOK = r.ReadPixelsBGRA(lr.raw, w, h)
-		lr.bgraTried = true
+	// Preferred path: asynchronous readback through a pixel-pack buffer. The
+	// GPU is never stalled waiting for this frame's pixels; the frontend
+	// shows the previous frame instead (16ms of latency). The warm-up frame
+	// after a start or resize just re-sends whatever lr.out already holds.
+	read := false
+	if r, ok := gfx.(asyncFrameReader); ok && !lr.pboFailed {
+		okAsync, _ := r.ReadPixelsAsync(w, h, func(rgba []byte) {
+			libretroConvertFrame(lr.out, rgba, w, h, true)
+		})
+		if okAsync {
+			read = true
+		} else {
+			lr.pboFailed = true
+		}
 	}
-	if lr.bgraOK {
-		libretroFlipRows(lr.out, lr.raw, w, h)
-	} else {
-		gfx.ReadPixels(lr.raw, w, h)
-		libretroConvertFrame(lr.out, lr.raw, w, h, !strings.HasPrefix(gfx.GetName(), "Vulkan"))
+	if !read {
+		// A BGRA readback is already XRGB8888, leaving only the row flip;
+		// fall back to RGBA plus the CPU channel swap when the driver refuses
+		// (checked on every read: the first one decides, a later failure
+		// self-heals). Vulkan reads back top-down RGBA and always takes the
+		// fallback path.
+		if r, ok := gfx.(bgraReader); ok && (!lr.bgraTried || lr.bgraOK) {
+			lr.bgraOK = r.ReadPixelsBGRA(lr.raw, w, h)
+			lr.bgraTried = true
+		}
+		if lr.bgraOK {
+			libretroFlipRows(lr.out, lr.raw, w, h)
+		} else {
+			gfx.ReadPixels(lr.raw, w, h)
+			libretroConvertFrame(lr.out, lr.raw, w, h, !strings.HasPrefix(gfx.GetName(), "Vulkan"))
+		}
 	}
 
 	lr.readyOnce.Do(func() { close(lr.ready) })
@@ -360,6 +379,12 @@ func libretroPresentFrame() {
 // matches libretro's XRGB8888 byte order, reporting whether the driver took it.
 type bgraReader interface {
 	ReadPixelsBGRA(data []uint8, width, height int) bool
+}
+
+// asyncFrameReader is the double-buffered pixel-pack readback (GLES renderer):
+// queue this frame's read, consume the previous frame's RGBA bottom-up pixels.
+type asyncFrameReader interface {
+	ReadPixelsAsync(width, height int, consume func(rgba []byte)) (supported, consumed bool)
 }
 
 // libretroFlipRows turns GL's bottom-up rows into the top-down order libretro
