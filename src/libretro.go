@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -174,6 +175,7 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 		cfg.Config.FirstRun = false
 		cfg.Video.ExternalShaders = nil
 	})
+	libretroDefaultMemoryLimit()
 	libretroForceInput()
 	libretroForceResolution() // before sprite detail: it reads the game size
 	libretroForceFightAspect()
@@ -545,6 +547,36 @@ func libretroOverrideConfig(f func(*Config)) {
 			prev(cfg)
 		}
 		f(cfg)
+	}
+}
+
+// libretroDefaultMemoryLimit gives the GC a soft ceiling scaled to the
+// machine when the environment set none: left alone, the Go heap doubles past
+// what a shared-memory 4GB board can give while an HD pack decodes, and the
+// whole system thrashes for minutes. Soft limit only -- allocation past it
+// still succeeds, the GC just works harder. A GOMEMLIMIT from the frontend's
+// launcher wins: the runtime already applied it at startup.
+func libretroDefaultMemoryLimit() {
+	if os.Getenv("GOMEMLIMIT") != "" {
+		return
+	}
+	b, err := os.ReadFile("/proc/meminfo") // Linux only; elsewhere keep the default
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		v, ok := strings.CutPrefix(line, "MemTotal:")
+		if !ok {
+			continue
+		}
+		if f := strings.Fields(v); len(f) > 0 {
+			if kb, err := strconv.ParseInt(f[0], 10, 64); err == nil && kb > 0 {
+				limit := Clamp(kb*1024/2, 1<<30, 3<<30)
+				debug.SetMemoryLimit(limit)
+				fmt.Fprintf(os.Stderr, "Ikemen GO: GC memory limit %dMiB\n", limit>>20)
+			}
+		}
+		return
 	}
 }
 

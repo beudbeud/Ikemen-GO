@@ -272,12 +272,14 @@ func TestSffCacheRoundTrip(t *testing.T) {
 	for _, spr := range list {
 		s.sprites[[2]uint16{spr.Group, spr.Number}] = spr
 	}
-	cap := map[*Sprite]sffCaptureEntry{
-		list[0]: {data: []byte{1, 2, 3, 4, 5, 6, 7, 8}, w: 4, h: 2, depth: 8},
-		// list[1] is a link, list[2] stays blank
+	// Capture through the real pipeline so the spill file is exercised too.
+	if !sffCacheBegin() {
+		t.Fatal("sffCacheBegin refused")
 	}
-
-	sffCacheStore(src, true, false, s, list, links, cap)
+	sffCaptureAdd(list[0], []byte{1, 2, 3, 4, 5, 6, 7, 8}, 4, 2, 8)
+	// list[1] is a link, list[2] stays blank
+	captured, spill := sffCacheEnd()
+	sffCacheStore(src, true, false, s, list, links, captured, spill)
 
 	// mainThreadTask must be drainable or the load blocks.
 	old := sys.mainThreadTask

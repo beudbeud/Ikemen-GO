@@ -26,13 +26,20 @@ import (
 const sffCacheMagic = "IKSFC001"
 
 type sffCaptureEntry struct {
-	data        []byte
+	off         int64 // position of the pixel blob in the spill file
+	n           int32
 	w, h, depth int32
 }
 
 var (
 	sffCacheMu    sync.Mutex
 	sffCaptureMap map[*Sprite]sffCaptureEntry // nil when no loadSff is recording
+	// Captured pixels spill straight to a temp file: an HD character SFF is
+	// hundreds of MB of decoded texels, and holding them all until the store
+	// at the end of the load is what used to spike RAM on a 4GB board.
+	sffSpillFile   *os.File
+	sffSpillWriter *bufio.Writer
+	sffSpillOff    int64
 )
 
 // sffCaptureAdd is called from SetPxl/SetRaw with the exact post-shrink bytes
@@ -40,8 +47,14 @@ var (
 // simply never looked up.
 func sffCaptureAdd(s *Sprite, data []byte, w, h, depth int32) {
 	sffCacheMu.Lock()
-	if sffCaptureMap != nil {
-		sffCaptureMap[s] = sffCaptureEntry{data, w, h, depth}
+	if sffCaptureMap != nil && sffSpillWriter != nil {
+		if _, err := sffSpillWriter.Write(data); err != nil {
+			// Disk trouble: stop recording, the load itself is unaffected.
+			sffCaptureMap = nil
+		} else {
+			sffCaptureMap[s] = sffCaptureEntry{sffSpillOff, int32(len(data)), w, h, depth}
+			sffSpillOff += int64(len(data))
+		}
 	}
 	sffCacheMu.Unlock()
 }
@@ -57,18 +70,43 @@ func sffCacheBegin() bool {
 	if sffCaptureMap != nil {
 		return false
 	}
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return false
+	}
+	dir = filepath.Join(dir, "ikemen-go")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return false
+	}
+	f, err := os.CreateTemp(dir, "spill*")
+	if err != nil {
+		return false
+	}
+	sffSpillFile, sffSpillWriter, sffSpillOff = f, bufio.NewWriterSize(f, 1<<20), 0
 	sffCaptureMap = map[*Sprite]sffCaptureEntry{}
 	return true
 }
 
-// sffCacheEnd stops recording and hands back what was captured. Safe to call
-// more than once; later calls return nil.
-func sffCacheEnd() map[*Sprite]sffCaptureEntry {
+// sffCacheEnd stops recording and hands back what was captured plus the spill
+// file holding the pixel blobs (flushed). The caller owns closing and removing
+// the file. Safe to call more than once; later calls return nil.
+func sffCacheEnd() (map[*Sprite]sffCaptureEntry, *os.File) {
 	sffCacheMu.Lock()
 	defer sffCacheMu.Unlock()
-	m := sffCaptureMap
-	sffCaptureMap = nil
-	return m
+	m, f := sffCaptureMap, sffSpillFile
+	if sffSpillWriter != nil && sffSpillWriter.Flush() != nil {
+		m = nil
+	}
+	sffCaptureMap, sffSpillFile, sffSpillWriter = nil, nil, nil
+	return m, f
+}
+
+// sffCacheDiscard ends a recording without storing it (error paths).
+func sffCacheDiscard() {
+	if _, f := sffCacheEnd(); f != nil {
+		f.Close()
+		os.Remove(f.Name())
+	}
 }
 
 func sffCachePath(filename string, char, isActPal bool) string {
@@ -126,9 +164,15 @@ func (w *sfcWriter) writeBytes(b []byte) {
 // race. It only ever runs on the first, uncached load -- the one that already
 // pays for the full decode.
 func sffCacheStore(filename string, char, isActPal bool, s *Sff,
-	list []*Sprite, links []int32, captured map[*Sprite]sffCaptureEntry) {
+	list []*Sprite, links []int32, captured map[*Sprite]sffCaptureEntry, spill *os.File) {
+	if spill != nil {
+		defer func() {
+			spill.Close()
+			os.Remove(spill.Name())
+		}()
+	}
 	path := sffCachePath(filename, char, isActPal)
-	if path == "" || captured == nil {
+	if path == "" || captured == nil || spill == nil {
 		return
 	}
 	size, mtime, ok := sffCacheSourceStat(filename)
@@ -174,6 +218,7 @@ func sffCacheStore(filename string, char, isActPal bool, s *Sff,
 	writeIdxMap(pl.numcols)
 
 	w.write(uint32(len(list)))
+	var blob []byte
 	for i, spr := range list {
 		w.write(spr.Group)
 		w.write(spr.Number)
@@ -193,8 +238,15 @@ func sffCacheStore(filename string, char, isActPal bool, s *Sff,
 			w.write(e.w)
 			w.write(e.h)
 			w.write(e.depth)
-			w.write(uint32(len(e.data)))
-			w.writeBytes(e.data)
+			w.write(uint32(e.n))
+			if int(e.n) > cap(blob) {
+				blob = make([]byte, e.n)
+			}
+			blob = blob[:e.n]
+			if _, err := spill.ReadAt(blob, e.off); err != nil {
+				w.err = err
+			}
+			w.writeBytes(blob)
 		default:
 			w.write(byte(0)) // blank sprite
 		}
