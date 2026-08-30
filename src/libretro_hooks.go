@@ -61,12 +61,31 @@ var libretroSpriteShrink int32
 // true-color rips (4 bytes per texel) are, and they downscale invisibly.
 var libretroShrinkIndexed bool
 
+// libretroSpriteShrinkFactor picks the texture divisor for a game rendered at
+// gameH but shown at outH: enough that the output cannot tell, never more
+// than 4 (a stage zooming in past that would show it on any screen).
+func libretroSpriteShrinkFactor(gameH, outH int32) int32 {
+	if gameH <= 0 || outH <= 0 {
+		return 1
+	}
+	return Clamp((gameH+outH-1)/outH, 1, 4)
+}
+
+// libretroShrinkGameH arms the per-sprite HD check in "Auto" (0 = off): a
+// true-color sprite taller than the game frame is an HD rip whatever the
+// pack's config declares (HD characters in a 480p-configured pack), and gets
+// its own divisor so it uploads at what the output can actually show.
+var libretroShrinkGameH int32
+
 // libretroShrinkSprite returns the sprite bitmap reduced by the configured
 // factor: palette indices by decimation (they cannot be averaged), RGB by box
 // average, RGBA alpha-weighted so transparent texels do not darken edges.
 // Small sprites -- fonts, UI elements -- pass through untouched.
 func libretroShrinkSprite(data []byte, w, h, bpp int32) ([]byte, int32, int32) {
 	n := libretroSpriteShrink
+	if libretroShrinkGameH > 0 && bpp != 1 {
+		n = Max(n, libretroSpriteShrinkFactor(h, libretroShrinkGameH))
+	}
 	if n <= 1 || w*h < 65536 || w < n || h < n ||
 		(bpp != 1 && bpp != 3 && bpp != 4) || int32(len(data)) != w*h*bpp {
 		return data, w, h
