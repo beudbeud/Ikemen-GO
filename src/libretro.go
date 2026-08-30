@@ -523,16 +523,6 @@ func libretroOverrideConfig(f func(*Config)) {
 	}
 }
 
-// libretroSpriteShrinkFactor picks the texture divisor for a game rendered at
-// gameH but shown at outH: enough that the output cannot tell, never more
-// than 4 (a stage zooming in past that would show it on any screen).
-func libretroSpriteShrinkFactor(gameH, outH int32) int32 {
-	if gameH <= 0 || outH <= 0 {
-		return 1
-	}
-	return Clamp((gameH+outH-1)/outH, 1, 4)
-}
-
 // libretroSpriteDetail honours the "Sprite detail" core option. "Auto" judges
 // the assets' authored height (what the pack's config declared, before
 // "Resolution" reframed it) against the height the game actually runs at: a
@@ -550,6 +540,9 @@ func libretroSpriteDetail() {
 			libretroSpriteShrink = 1
 		default: // Auto
 			libretroSpriteShrink = libretroSpriteShrinkFactor(assetsH, cfg.Video.GameHeight)
+			// Some packs declare a small GameWidth/Height while shipping HD
+			// character rips; the per-sprite check catches those too.
+			libretroShrinkGameH = cfg.Video.GameHeight
 		}
 		fmt.Fprintf(os.Stderr, "Ikemen GO: sprite detail %q -> texture divisor %d (assets %dp, game %dp)\n",
 			choice, libretroSpriteShrink, assetsH, cfg.Video.GameHeight)

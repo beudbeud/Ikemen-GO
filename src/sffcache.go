@@ -80,8 +80,8 @@ func sffCachePath(filename string, char, isActPal bool) string {
 	if err != nil {
 		abs = filename
 	}
-	key := fmt.Sprintf("%s|%v|%v|%d|%v", abs, char, isActPal,
-		libretroSpriteShrink, libretroShrinkIndexed)
+	key := fmt.Sprintf("%s|%v|%v|%d|%v|%d", abs, char, isActPal,
+		libretroSpriteShrink, libretroShrinkIndexed, libretroShrinkGameH)
 	sum := sha1.Sum([]byte(key))
 	return filepath.Join(dir, "ikemen-go", hex.EncodeToString(sum[:])+".sfc")
 }

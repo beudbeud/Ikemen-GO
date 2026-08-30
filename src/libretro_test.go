@@ -149,9 +149,11 @@ func TestLibretroSpriteShrinkFactor(t *testing.T) {
 }
 
 func TestLibretroShrinkSprite(t *testing.T) {
-	old, oldIdx := libretroSpriteShrink, libretroShrinkIndexed
-	t.Cleanup(func() { libretroSpriteShrink, libretroShrinkIndexed = old, oldIdx })
-	libretroSpriteShrink, libretroShrinkIndexed = 2, true
+	old, oldIdx, oldGameH := libretroSpriteShrink, libretroShrinkIndexed, libretroShrinkGameH
+	t.Cleanup(func() {
+		libretroSpriteShrink, libretroShrinkIndexed, libretroShrinkGameH = old, oldIdx, oldGameH
+	})
+	libretroSpriteShrink, libretroShrinkIndexed, libretroShrinkGameH = 2, true, 0
 
 	// Below the size threshold: untouched.
 	small := []byte{1, 2, 3, 4}
@@ -188,6 +190,16 @@ func TestLibretroShrinkSprite(t *testing.T) {
 	}
 	if out[0] != 255 || out[3] != 63 {
 		t.Errorf("rgba: got r=%d a=%d, want r=255 a=63", out[0], out[3])
+	}
+
+	// Auto's per-sprite HD check: no global shrink, but a true-color sprite
+	// taller than the 480p frame gets its own divisor; indexed stays spared.
+	libretroSpriteShrink, libretroShrinkIndexed, libretroShrinkGameH = 1, false, 480
+	if _, ow, oh := libretroShrinkSprite(rgba, w, h, 4); ow != 256 || oh != 256 {
+		t.Errorf("hd rgba: got %dx%d", ow, oh)
+	}
+	if _, ow, oh := libretroShrinkSprite(idx, w, h, 1); ow != 512 || oh != 512 {
+		t.Errorf("hd indexed spared: got %dx%d", ow, oh)
 	}
 }
 
