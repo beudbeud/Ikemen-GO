@@ -1538,7 +1538,7 @@ func loadSff(filename string, char bool, isMainThread bool, isActPal bool) (*Sff
 	}
 	recording := sffCacheBegin()
 	if recording {
-		defer sffCacheEnd() // clears the capture on every error path
+		defer sffCacheDiscard() // clears the capture and spill on every error path
 	}
 
 	// Where fight-load time actually goes is invisible without this; a Pi
@@ -1735,7 +1735,8 @@ func loadSff(filename string, char bool, isMainThread bool, isActPal bool) (*Sff
 	// Only files that actually cost something earn a cache entry; a fast sff
 	// would spend more time writing than it ever saves.
 	if recording && time.Since(start) > 200*time.Millisecond {
-		sffCacheStore(filename, char, isActPal, s, spriteList, cacheLinks, sffCacheEnd())
+		captured, spill := sffCacheEnd()
+		sffCacheStore(filename, char, isActPal, s, spriteList, cacheLinks, captured, spill)
 	}
 
 	return s, nil
