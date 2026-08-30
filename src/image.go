@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"image"
@@ -10,7 +11,9 @@ import (
 	"math"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 )
@@ -1191,89 +1194,85 @@ func (s *Sprite) Lz5Decode(rle []byte) (p []byte) {
 	return
 }
 
-func (s *Sprite) readV2(f io.ReadSeeker, offset int64, datasize uint32) error {
-	var px []byte
-	var isRaw bool = false
+// readV2Data pulls a v2 sprite's payload off the file, so the single file
+// handle stays on the loading thread while decodeV2 can run on workers.
+func (s *Sprite) readV2Data(f io.ReadSeeker, offset int64, datasize uint32) ([]byte, error) {
+	if s.rle > 0 {
+		return nil, nil
+	}
+	if s.rle == 0 {
+		f.Seek(offset, 0)
+		px := make([]uint8, datasize)
+		binary.Read(f, binary.LittleEndian, px)
+		return px, nil
+	}
+	f.Seek(offset+4, 0)
+	if datasize < 4 {
+		datasize = 4
+	}
+	px := make([]byte, datasize-4)
+	if err := binary.Read(f, binary.LittleEndian, px); err != nil {
+		return nil, err
+	}
+	return px, nil
+}
 
+// decodeV2 turns a v2 sprite payload into texels. Pure CPU plus the upload
+// queue: safe to run concurrently for distinct sprites.
+func (s *Sprite) decodeV2(data []byte) error {
 	if s.rle > 0 {
 		return nil
-
-	} else if s.rle == 0 {
-		f.Seek(offset, 0)
-		px = make([]uint8, datasize)
-		binary.Read(f, binary.LittleEndian, px)
-
+	}
+	if s.rle == 0 {
 		switch s.coldepth {
 		case 8:
-			// Do nothing, px is already in the expected format
+			s.SetPxl(data)
 		case 24, 32:
-			isRaw = true
-			s.SetRaw(px, int32(s.Size[0]), int32(s.Size[1]), int32(s.coldepth))
+			s.SetRaw(data, int32(s.Size[0]), int32(s.Size[1]), int32(s.coldepth))
 		default:
 			return Error("Unknown color depth")
 		}
-
-	} else {
-		f.Seek(offset+4, 0)
-		format := -s.rle
-
-		var rgba *image.RGBA
-		var rect image.Rectangle
-
-		if 2 <= format && format <= 4 {
-			if datasize < 4 {
-				datasize = 4
-			}
-			px = make([]byte, datasize-4)
-			if err := binary.Read(f, binary.LittleEndian, px); err != nil {
-				panic(err)
-				//return err
-			}
-		}
-
-		switch format {
-		case 2:
-			px = s.Rle8Decode(px)
-		case 3:
-			px = s.Rle5Decode(px)
-		case 4:
-			px = s.Lz5Decode(px)
-		case 10:
-			img, err := png.Decode(f)
-			if err != nil {
-				return err
-			}
-			pi, ok := img.(*image.Paletted)
-			if ok {
-				px = pi.Pix
-			}
-		case 11, 12:
-			var ok bool = false
-			isRaw = true
-
-			// Decode PNG image to RGBA
-			img, err := png.Decode(f)
-			if err != nil {
-				return err
-			}
-
-			rect = img.Bounds()
-			rgba, ok = img.(*image.RGBA)
-
-			if !ok {
-				rgba = image.NewRGBA(rect)
-				draw.Draw(rgba, rect, img, rect.Min, draw.Src)
-			}
-			s.SetRaw(rgba.Pix, int32(rect.Max.X-rect.Min.X), int32(rect.Max.Y-rect.Min.Y), 32)
-		default:
-			return Error("Unknown format")
-		}
+		return nil
 	}
-
-	if !isRaw {
-		s.SetPxl(px)
+	switch format := -s.rle; format {
+	case 2:
+		s.SetPxl(s.Rle8Decode(data))
+	case 3:
+		s.SetPxl(s.Rle5Decode(data))
+	case 4:
+		s.SetPxl(s.Lz5Decode(data))
+	case 10:
+		img, err := png.Decode(bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		if pi, ok := img.(*image.Paletted); ok {
+			s.SetPxl(pi.Pix)
+		}
+	case 11, 12:
+		img, err := png.Decode(bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		rect := img.Bounds()
+		rgba, ok := img.(*image.RGBA)
+		if !ok {
+			rgba = image.NewRGBA(rect)
+			draw.Draw(rgba, rect, img, rect.Min, draw.Src)
+		}
+		s.SetRaw(rgba.Pix, int32(rect.Max.X-rect.Min.X), int32(rect.Max.Y-rect.Min.Y), 32)
+	default:
+		return Error("Unknown format")
 	}
 	return nil
+}
+
+func (s *Sprite) readV2(f io.ReadSeeker, offset int64, datasize uint32) error {
+	data, err := s.readV2Data(f, offset, datasize)
+	if err != nil {
+		return err
+	}
+	return s.decodeV2(data)
 }
 
 // Update the cached palette for the sprite then return it
@@ -1580,6 +1579,48 @@ func loadSff(filename string, char bool, isMainThread bool, isActPal bool) (*Sff
 			cacheLinks[i] = -1
 		}
 	}
+	// v2 payloads decode (PNG inflate dominates an HD pack's load time) on
+	// workers while this thread keeps reading the file; links resolve after
+	// the barrier below, once their source sprite is guaranteed decoded.
+	type sffDecodeJob struct {
+		spr  *Sprite
+		data []byte
+	}
+	var (
+		jobs        chan sffDecodeJob
+		decodeWg    sync.WaitGroup
+		decodeErrMu sync.Mutex
+		decodeErr   error
+		v2links     [][2]int
+	)
+	if s.header.Version[0] == 2 {
+		jobs = make(chan sffDecodeJob, 4)
+		for n := Clamp(runtime.NumCPU()-1, 1, 4); n > 0; n-- {
+			decodeWg.Add(1)
+			go func() {
+				defer decodeWg.Done()
+				for j := range jobs {
+					if loadingCanceled() {
+						continue // keep draining so the sender never blocks
+					}
+					if err := j.spr.decodeV2(j.data); err != nil {
+						decodeErrMu.Lock()
+						if decodeErr == nil {
+							decodeErr = err
+						}
+						decodeErrMu.Unlock()
+					}
+				}
+			}()
+		}
+		defer func() {
+			if jobs != nil { // an early return: release the workers
+				close(jobs)
+				decodeWg.Wait()
+			}
+		}()
+	}
+
 	var prev *Sprite
 	shofs := int64(s.header.FirstSpriteHeaderOffset)
 	for i := 0; i < len(spriteList); i++ {
@@ -1604,14 +1645,17 @@ func loadSff(filename string, char bool, isMainThread bool, isActPal bool) (*Sff
 		}
 		if size == 0 {
 			if int(indexOfPrevious) < i {
-				dst, src := spriteList[i], spriteList[int(indexOfPrevious)]
 				if loadingCanceled() {
 					return nil, ErrLoadingCanceled
 				}
-				// Moved to shareCopy() itself
-				//sys.mainThreadTask <- func() {
-				dst.shareCopy(src)
-				//}
+				if s.header.Version[0] == 2 {
+					// The source may still be on a decode worker; its
+					// header-derived fields are set, but the texture share
+					// must wait for the barrier below.
+					v2links = append(v2links, [2]int{i, int(indexOfPrevious)})
+				} else {
+					spriteList[i].shareCopy(spriteList[int(indexOfPrevious)])
+				}
 				if recording {
 					cacheLinks[i] = int32(indexOfPrevious)
 				}
@@ -1632,9 +1676,11 @@ func loadSff(filename string, char bool, isMainThread bool, isActPal bool) (*Sff
 					}
 				}
 			case 2:
-				if err := spriteList[i].readV2(f, int64(xofs), size); err != nil {
+				data, err := spriteList[i].readV2Data(f, int64(xofs), size)
+				if err != nil {
 					return nil, err
 				}
+				jobs <- sffDecodeJob{spriteList[i], data}
 			}
 			prev = spriteList[i]
 		}
@@ -1653,6 +1699,33 @@ func loadSff(filename string, char bool, isMainThread bool, isActPal bool) (*Sff
 				return nil, ErrLoadingCanceled
 			}
 			sys.runMainThreadTask()
+		}
+	}
+	if jobs != nil {
+		close(jobs)
+		if isMainThread {
+			// Keep the GPU upload queue draining while the workers finish, or
+			// a full queue would deadlock them against this thread.
+			done := make(chan struct{})
+			go func() { decodeWg.Wait(); close(done) }()
+			for open := true; open; {
+				select {
+				case <-done:
+					open = false
+				default:
+					sys.runMainThreadTask()
+					time.Sleep(time.Millisecond)
+				}
+			}
+		} else {
+			decodeWg.Wait()
+		}
+		jobs = nil // the deferred cleanup must not close it again
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		for _, l := range v2links {
+			spriteList[l[0]].shareCopy(spriteList[l[1]])
 		}
 	}
 	if loadingCanceled() {
