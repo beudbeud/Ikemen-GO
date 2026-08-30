@@ -248,6 +248,7 @@ var triggerMap = map[string]int{
 	"cos":               1,
 	"ctrl":              1,
 	"drawgame":          1,
+	"drawpalno":         1,
 	"e":                 1,
 	"exp":               1,
 	"facing":            1,
@@ -450,6 +451,7 @@ var triggerMap = map[string]int{
 	"prevstatetype":      1,
 	"projclsnoverlap":    1,
 	"projvar":            1,
+	"rand":               1,
 	"rad":                1,
 	"randomrange":        1,
 	"receiveddamage":     1,
@@ -4229,7 +4231,7 @@ func (c *CharCompiler) expValue(out *BytecodeExp, in *string,
 			out.min(&bv1, bv2)
 			bv = bv1
 		}
-	case "randomrange":
+	case "randomrange", "rand": // rand is a deprecated alias kept for older packs
 		if err := c.checkOpeningParenthesis(in); err != nil {
 			return bvNone(), err
 		}
@@ -4914,6 +4916,8 @@ func (c *CharCompiler) expValue(out *BytecodeExp, in *string,
 	// Deprecated triggers kept as aliases so packs predating their removal still compile
 	case "animelemlength": // = animelemvar(time)
 		out.append(OC_ex_, OC_ex_animelemvar_time)
+	case "drawpalno": // = palno, whose semantics absorbed it upstream
+		out.append(OC_palno)
 	case "getplayerid":
 		if _, err := c.oneArg(out, in, rd, true); err != nil {
 			return bvNone(), err
