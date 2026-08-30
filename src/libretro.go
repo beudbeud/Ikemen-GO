@@ -63,6 +63,9 @@ var lr struct {
 	applied       map[string]string // option values the running engine was built with
 	warnedOptions bool              // an "applies after restart" message is on screen
 
+	stallStart time.Time // first missed frame of the current stall (retro thread only)
+	stallShown int64     // last whole second a loading message was shown for
+
 	speaker  *LibretroSpeaker
 	audioAcc float64
 	pcm      []int16
@@ -295,6 +298,7 @@ func retro_run() {
 		// the only moment it is safe to write the shared input state.
 		libretroReadInput()
 		lr.frameReq <- struct{}{}
+		lr.stallStart, lr.stallShown = time.Time{}, 0
 	case <-time.After(libretroFrameTimeout):
 		// Still loading. A nil frame tells the frontend to repeat the last one,
 		// at the geometry that frame was delivered with: lr.w/lr.h belong to
@@ -302,6 +306,15 @@ func retro_run() {
 		// here -- and a resize it is mid-way through only takes effect for the
 		// frontend once the frameDone path above reports it anyway.
 		C.ik_video(nil, C.uint(lr.repW), C.uint(lr.repH), C.size_t(lr.repW*4))
+		// A stall this long is a load (SFF parsing, fight setup), and a big
+		// pack keeps the screen frozen or black for tens of seconds: say the
+		// core is alive, once per second so the counter ticks.
+		if lr.stallStart.IsZero() {
+			lr.stallStart = time.Now()
+		} else if s := int64(time.Since(lr.stallStart) / time.Second); s >= 1 && s != lr.stallShown {
+			lr.stallShown = s
+			libretroMessageFrames(fmt.Sprintf("Ikemen GO: loading... %ds", s), 90)
+		}
 	}
 
 	libretroPushAudio()
@@ -864,9 +877,13 @@ func libretroFindMotif() string {
 }
 
 func libretroMessage(text string) {
+	libretroMessageFrames(text, 180)
+}
+
+func libretroMessageFrames(text string, frames uint32) {
 	msg := C.struct_retro_message{
 		msg:    C.CString(text),
-		frames: 180,
+		frames: C.uint(frames),
 	}
 	defer C.free(unsafe.Pointer(msg.msg))
 	C.ik_env(C.uint(C.RETRO_ENVIRONMENT_SET_MESSAGE), unsafe.Pointer(&msg))
