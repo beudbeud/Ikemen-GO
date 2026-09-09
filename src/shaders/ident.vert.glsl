@@ -11,6 +11,7 @@
 	#endif
 
 	uniform vec2 TextureSize; // Not used
+	uniform float FlipY; // 1.0 writes the picture top-down (libretro readback)
 	COMPAT_ATTRIBUTE vec2 VertCoord;
 	COMPAT_VARYING vec2 texcoord; // TODO: Casing doesn't match Go
 #endif
@@ -19,4 +20,7 @@ void main() {
 	gl_Position = vec4(VertCoord, 0.0, 1.0);
 	// Standard quad-to-UV mapping
 	texcoord = (VertCoord + 1.0) / 2.0;
+#if __VERSION__ < 450
+	texcoord.y = mix(texcoord.y, 1.0 - texcoord.y, FlipY);
+#endif
 }

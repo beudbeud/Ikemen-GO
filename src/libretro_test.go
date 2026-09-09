@@ -385,3 +385,18 @@ func TestLibretroQueueRumble(t *testing.T) {
 	libretroQueueRumble(len(lr.rumble), 1, 1, 1)
 	lr.rumble[1].Store(0)
 }
+
+func TestLibretroEnvArgs(t *testing.T) {
+	t.Setenv("IKEMEN_ARGS", "-p1 Kfm -p2 Kfm -s stages/kfm.def -p1.ai 8 -nosound")
+	sys.cmdFlags = nil
+	libretroEnvArgs()
+	want := map[string]string{"-p1": "Kfm", "-p2": "Kfm", "-s": "stages/kfm.def", "-p1.ai": "8", "-nosound": ""}
+	if len(sys.cmdFlags) != len(want) {
+		t.Fatalf("got %v, want %v", sys.cmdFlags, want)
+	}
+	for k, v := range want {
+		if sys.cmdFlags[k] != v {
+			t.Fatalf("%s = %q, want %q (%v)", k, sys.cmdFlags[k], v, sys.cmdFlags)
+		}
+	}
+}

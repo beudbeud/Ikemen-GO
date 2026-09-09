@@ -25,6 +25,11 @@ var (
 	// Same contract as sdl.GameController.Rumble via RumbleController: lo/hi
 	// motor strengths, duration in game ticks, ticks==0 stops.
 	libretroRumble func(joy int, lo, hi uint16, ticks uint32)
+	// libretroHWRender is set when the frontend gave the core its own GL
+	// framebuffer: the renderer then draws its final pass into the texture
+	// the core asks for (SetPresentFramebuffer), GL orientation, and nothing
+	// is ever read back.
+	libretroHWRender bool
 	// libretroHeadlessGL creates the engine's GL context straight from EGL,
 	// with no window and no SDL video driver. Non-nil only in a `gles` core,
 	// which is the build for frontends that already own the display: on a

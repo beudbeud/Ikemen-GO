@@ -7,12 +7,14 @@
 // and that goroutine hand a single frame back and forth over two channels, so
 // only one of them is ever touching engine state at a time.
 //
-// ponytail: the frame is read back from the hidden window with glReadPixels and
-// handed to the frontend as a software framebuffer. That costs one readback and
-// one CPU colour-swap per frame, and it keeps every line of the renderer, the
-// window code and the Lua loop exactly as-is. The upgrade path, if the readback
-// ever shows up in a profile, is RETRO_ENVIRONMENT_SET_HW_RENDER plus making
-// Renderer_GL33 bind the frontend's FBO instead of 0.
+// Frames reach the frontend one of two ways. The gles core asks for hardware
+// rendering (RETRO_ENVIRONMENT_SET_HW_RENDER) and shares the finished frame's
+// texture as a dma-buf, GPU to GPU, no copy (libretro_egl.go). Everywhere else
+// -- or when the frontend declines -- the frame is read back from the hidden
+// window and handed over as a software framebuffer: one readback and one row
+// flip per frame (BGRA is asked of the driver so no colour swap is needed),
+// with every line of the renderer, the window code and the Lua loop kept
+// exactly as-is.
 package main
 
 /*
@@ -27,6 +29,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,7 +49,7 @@ const libretroFPS = 60.0
 const libretroFrameTimeout = 50 * time.Millisecond
 
 var lr struct {
-	frameDone chan struct{} // game -> frontend: a frame is in lr.out
+	frameDone chan struct{} // game -> frontend: a frame is in lr.frame
 	frameReq  chan struct{} // frontend -> game: go compute the next one
 	ready     chan struct{} // closed once the engine has produced its first frame
 	readyOnce sync.Once
@@ -57,13 +60,15 @@ var lr struct {
 	w, h       int
 	repW, repH int     // last geometry reported to the frontend (retro thread only)
 	raw        []uint8 // straight from the GL readback
-	out        []uint8 // XRGB8888, top-down: what the frontend sees
+	out        []uint8 // XRGB8888, top-down, when a conversion was needed
+	frame      []uint8 // what the frontend sees: lr.out, or the mapped PBO itself
 
 	bgraTried, bgraOK bool // whether the driver accepts a BGRA readback
 	pboFailed         bool // async PBO readback refused: stay on the sync path
 
 	applied       map[string]string // option values the running engine was built with
 	warnedOptions bool              // an "applies after restart" message is on screen
+	warnedHW      bool              // the hardware path failed and the player was told
 
 	stallStart time.Time // first missed frame of the current stall (retro thread only)
 	stallShown int64     // last whole second a loading message was shown for
@@ -75,9 +80,26 @@ var lr struct {
 	keys map[int]bool       // RETROK_* -> was down last frame
 	keyq []libretroKeyEvent // filled by retro_run, drained on the game thread
 
+	prof *os.File // IKEMEN_PROFILE: CPU profile in flight
+	st   struct { // IKEMEN_PROFILE: per-5s frame statistics
+		on                   bool
+		runs, frames, missed int
+		step, stepMax, read  time.Duration
+		reqAt, since         time.Time
+	}
+
 	rumbleOK   bool                       // frontend granted retro_rumble_interface
 	rumble     [MaxPlayerNo]atomic.Uint64 // game -> retro: lo<<48 | hi<<32 | ticks<<1 | dirty
 	rumbleLeft [MaxPlayerNo]uint32        // frames until the motors stop (retro thread only)
+}
+
+// libretroHW is the hardware-rendering path, filled in by the gles build
+// (libretro_egl.go); nil functions mean the software readback is the only
+// option. active is set once the frontend has accepted SET_HW_RENDER.
+var libretroHW struct {
+	export  func(w, h int) bool // game thread: hand the finished frame's texture over
+	present func(w, h int)      // retro thread: blit it into the frontend's framebuffer
+	active  bool
 }
 
 type libretroKeyEvent struct {
@@ -149,6 +171,7 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	}
 
 	libretroRedirectSaves(root)
+	libretroEnvArgs()
 	libretroUseSystemEngine()
 	// No engine scripts in the content and no system tree to fall back on:
 	// realMain could only panic. Fail the load with a message instead.
@@ -207,6 +230,14 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	}
 	C.ik_set_input_descriptors()
 	lr.rumbleOK = bool(C.ik_init_rumble())
+	// Hardware rendering when the frontend offers it: the frame goes GPU to
+	// GPU instead of through a readback (see libretro_egl.go). Decided here,
+	// before the renderer starts, since it changes how the final pass draws.
+	if libretroHW.export != nil && os.Getenv("IKEMEN_NO_HW") == "" && bool(C.ik_set_hw_render()) {
+		libretroHW.active = true
+		libretroHWRender = true
+		fmt.Fprintln(os.Stderr, "Ikemen GO: hardware rendering (frontend GL ES 3 context)")
+	}
 
 	lr.frameDone = make(chan struct{})
 	lr.frameReq = make(chan struct{})
@@ -221,6 +252,7 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	libretroRumble = libretroQueueRumble
 	libretroPads = MaxPlayerNo
 	lr.started = true
+	libretroStartProfile()
 
 	bootStart := time.Now()
 	go func() {
@@ -238,6 +270,7 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 
 //export retro_unload_game
 func retro_unload_game() {
+	libretroStopProfile()
 	if !lr.started || lr.quitting.Load() {
 		return
 	}
@@ -273,6 +306,7 @@ func retro_run() {
 
 	C.ik_input_poll()
 	libretroApplyRumble()
+	lr.st.runs++
 
 	// The two options are only read when content loads (window, engine root and
 	// Lua state are all built from them), so a change mid-run cannot be
@@ -296,10 +330,16 @@ func retro_run() {
 			}
 			C.ik_env(C.uint(C.RETRO_ENVIRONMENT_SET_GEOMETRY), unsafe.Pointer(&geo))
 		}
-		C.ik_video(unsafe.Pointer(&lr.out[0]), C.uint(lr.w), C.uint(lr.h), C.size_t(lr.w*4))
+		if libretroHW.active {
+			libretroHW.present(lr.w, lr.h)
+		} else {
+			C.ik_video(unsafe.Pointer(&lr.frame[0]), C.uint(lr.w), C.uint(lr.h), C.size_t(lr.w*4))
+		}
 		// The game thread is parked in libretroPresentFrame right now, which is
 		// the only moment it is safe to write the shared input state.
 		libretroReadInput()
+		lr.st.frames++
+		libretroLogStats()
 		lr.frameReq <- struct{}{}
 		if !lr.stallStart.IsZero() && time.Since(lr.stallStart) >= time.Second {
 			// A load just ended: hand its garbage back to the OS right away
@@ -316,6 +356,7 @@ func retro_run() {
 		// here -- and a resize it is mid-way through only takes effect for the
 		// frontend once the frameDone path above reports it anyway.
 		C.ik_video(nil, C.uint(lr.repW), C.uint(lr.repH), C.size_t(lr.repW*4))
+		lr.st.missed++
 		// A stall this long is a load (SFF parsing, fight setup), and a big
 		// pack keeps the screen frozen or black for tens of seconds: say the
 		// core is alive, once per second so the counter ticks.
@@ -340,48 +381,159 @@ func libretroPresentFrame() {
 	if w <= 0 || h <= 0 {
 		return
 	}
+	t0 := time.Now()
+	if lr.st.on && !lr.st.reqAt.IsZero() {
+		d := t0.Sub(lr.st.reqAt)
+		lr.st.step += d
+		if d > lr.st.stepMax {
+			lr.st.stepMax = d
+		}
+	}
 	if lr.w != w || lr.h != h {
 		lr.w, lr.h = w, h
-		lr.raw = make([]uint8, w*h*4)
-		lr.out = make([]uint8, w*h*4)
+		if !libretroHW.active {
+			lr.raw = make([]uint8, w*h*4)
+			lr.out = make([]uint8, w*h*4)
+			lr.frame = lr.out
+		}
+	}
+	if libretroHW.active {
+		if !libretroHW.export(w, h) && !lr.warnedHW {
+			lr.warnedHW = true
+			libretroMessage("Ikemen GO: GPU frame sharing failed, no picture")
+		}
+	} else {
+		libretroReadbackFrame(w, h)
+	}
+	if lr.st.on {
+		lr.st.read += time.Since(t0)
+	}
+	lr.readyOnce.Do(func() { close(lr.ready) })
+
+	lr.frameDone <- struct{}{}
+	<-lr.frameReq
+	lr.st.reqAt = time.Now()
+}
+
+// libretroReadbackFrame is the software path: read framebuffer 0 back into
+// lr.frame, in the frontend's XRGB8888 top-down layout.
+func libretroReadbackFrame(w, h int) {
+	// Whether framebuffer 0 already holds top-down rows (GLES renderer draws
+	// its final pass flipped for us) or GL's bottom-up order. Vulkan reads
+	// back top-down.
+	topDown := strings.HasPrefix(gfx.GetName(), "Vulkan")
+	if r, ok := gfx.(interface{ FrameTopDown() bool }); ok {
+		topDown = r.FrameTopDown()
 	}
 	// Preferred path: asynchronous readback through a pixel-pack buffer. The
 	// GPU is never stalled waiting for this frame's pixels; the frontend
 	// shows the previous frame instead (16ms of latency). The warm-up frame
-	// after a start or resize just re-sends whatever lr.out already holds.
+	// after a start or resize just re-sends whatever lr.frame already holds.
 	read := false
 	if r, ok := gfx.(asyncFrameReader); ok && !lr.pboFailed {
-		okAsync, _ := r.ReadPixelsAsync(w, h, func(rgba []byte) {
-			libretroConvertFrame(lr.out, rgba, w, h, true)
-		})
-		if okAsync {
-			read = true
-		} else {
+		px, bgra, okAsync := r.ReadPixelsAsync(w, h)
+		switch {
+		case !okAsync:
 			lr.pboFailed = true
+		case px == nil:
+			lr.frame = lr.out // warm-up: no previous frame mapped any more
+			read = true
+		case bgra && topDown:
+			// Already the frontend's format: hand it the mapped buffer
+			// itself, no copy on this thread. It stays mapped until the
+			// next readback, well after retro_run has consumed it.
+			lr.frame = px
+			read = true
+		default:
+			// The mapped buffer is GPU memory, uncached on a shared-memory
+			// board: read it once, sequentially (memcpy), never byte by byte.
+			if bgra {
+				libretroFlipRows(lr.out, px, w, h)
+			} else {
+				copy(lr.raw, px)
+				libretroConvertFrame(lr.out, lr.raw, w, h, !topDown)
+			}
+			lr.frame = lr.out
+			read = true
 		}
 	}
 	if !read {
 		// A BGRA readback is already XRGB8888, leaving only the row flip;
 		// fall back to RGBA plus the CPU channel swap when the driver refuses
 		// (checked on every read: the first one decides, a later failure
-		// self-heals). Vulkan reads back top-down RGBA and always takes the
-		// fallback path.
+		// self-heals).
 		if r, ok := gfx.(bgraReader); ok && (!lr.bgraTried || lr.bgraOK) {
 			lr.bgraOK = r.ReadPixelsBGRA(lr.raw, w, h)
 			lr.bgraTried = true
 		}
-		if lr.bgraOK {
+		if lr.bgraOK && topDown {
+			copy(lr.out, lr.raw)
+		} else if lr.bgraOK {
 			libretroFlipRows(lr.out, lr.raw, w, h)
 		} else {
 			gfx.ReadPixels(lr.raw, w, h)
-			libretroConvertFrame(lr.out, lr.raw, w, h, !strings.HasPrefix(gfx.GetName(), "Vulkan"))
+			libretroConvertFrame(lr.out, lr.raw, w, h, !topDown)
 		}
+		lr.frame = lr.out
 	}
+}
 
-	lr.readyOnce.Do(func() { close(lr.ready) })
+// --- profiling (IKEMEN_PROFILE=<dir>) ------------------------------------
+//
+// Writes <dir>/cpu.pprof from content load to unload, and logs frame
+// statistics every 5s: how often the frontend calls retro_run, how many of
+// those got a fresh frame, and what the game thread spent per frame on the
+// engine step (from the frontend's request to the finished render) and on the
+// readback.
 
-	lr.frameDone <- struct{}{}
-	<-lr.frameReq
+func libretroStartProfile() {
+	dir := os.Getenv("IKEMEN_PROFILE")
+	if dir == "" {
+		return
+	}
+	lr.st.on = true
+	lr.st.since = time.Now()
+	f, err := os.Create(filepath.Join(dir, "cpu.pprof"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Ikemen GO: profile:", err)
+		return
+	}
+	if err := pprof.StartCPUProfile(f); err != nil {
+		fmt.Fprintln(os.Stderr, "Ikemen GO: profile:", err)
+		f.Close()
+		return
+	}
+	lr.prof = f
+}
+
+func libretroStopProfile() {
+	if lr.prof == nil {
+		return
+	}
+	pprof.StopCPUProfile()
+	lr.prof.Close()
+	lr.prof = nil
+	fmt.Fprintln(os.Stderr, "Ikemen GO: CPU profile written")
+}
+
+// libretroLogStats runs on the retro thread with the game thread parked, so
+// every field is stable.
+func libretroLogStats() {
+	if !lr.st.on {
+		return
+	}
+	el := time.Since(lr.st.since)
+	if el < 5*time.Second {
+		return
+	}
+	st := &lr.st
+	n := time.Duration(Max(st.frames, 1))
+	fmt.Fprintf(os.Stderr, "Ikemen GO: %.1f retro_run/s, %.1f frames/s, %d repeats | game step avg %.2fms max %.2fms, readback avg %.2fms\n",
+		float64(st.runs)/el.Seconds(), float64(st.frames)/el.Seconds(), st.missed,
+		float64(st.step/n)/1e6, float64(st.stepMax)/1e6, float64(st.read/n)/1e6)
+	st.runs, st.frames, st.missed = 0, 0, 0
+	st.step, st.stepMax, st.read = 0, 0, 0
+	st.since = time.Now()
 }
 
 // bgraReader is implemented by the GL renderers: a readback that already
@@ -391,9 +543,10 @@ type bgraReader interface {
 }
 
 // asyncFrameReader is the double-buffered pixel-pack readback (GLES renderer):
-// queue this frame's read, consume the previous frame's RGBA bottom-up pixels.
+// queue this frame's read, get the previous frame's pixels, mapped until the
+// next call.
 type asyncFrameReader interface {
-	ReadPixelsAsync(width, height int, consume func(rgba []byte)) (supported, consumed bool)
+	ReadPixelsAsync(width, height int) (px []byte, bgra, supported bool)
 }
 
 // libretroFlipRows turns GL's bottom-up rows into the top-down order libretro
@@ -494,6 +647,30 @@ func libretroRedirectSaves(root string) {
 		"-stats":  filepath.Join(base, "stats.json"),
 	}
 	libretroConfigPath = sys.cmdFlags["-config"]
+}
+
+// libretroEnvArgs feeds IKEMEN_ARGS to the engine as if typed on its command
+// line ("-p1 Kfm -p2 Kfm -s stages/kfm.def -p1.ai 8"): a benchmark hook, a
+// quick versus straight into a fight with no pad to press.
+func libretroEnvArgs() {
+	f := strings.Fields(os.Getenv("IKEMEN_ARGS"))
+	if len(f) == 0 {
+		return
+	}
+	if sys.cmdFlags == nil {
+		sys.cmdFlags = map[string]string{}
+	}
+	for i := 0; i < len(f); i++ {
+		if !strings.HasPrefix(f[i], "-") {
+			continue
+		}
+		k, v := f[i], ""
+		if i+1 < len(f) && !strings.HasPrefix(f[i+1], "-") {
+			v = f[i+1]
+			i++
+		}
+		sys.cmdFlags[k] = v
+	}
 }
 
 // libretroUseSystemEngine honours the "Engine files" core option. Set to

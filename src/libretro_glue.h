@@ -17,6 +17,7 @@
 #define RETRO_ENVIRONMENT_SHUTDOWN               7
 #define RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY   9
 #define RETRO_ENVIRONMENT_SET_PIXEL_FORMAT       10
+#define RETRO_ENVIRONMENT_SET_HW_RENDER          14
 #define RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS  11
 #define RETRO_ENVIRONMENT_GET_VARIABLE           15
 #define RETRO_ENVIRONMENT_SET_VARIABLES          16
@@ -28,6 +29,30 @@
 #define RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2      67
 
 #define RETRO_PIXEL_FORMAT_XRGB8888 1
+
+#define RETRO_HW_CONTEXT_OPENGLES3  4
+#define RETRO_HW_FRAME_BUFFER_VALID ((void *)-1)
+
+typedef void      (*retro_hw_context_reset_t)(void);
+typedef uintptr_t (*retro_hw_get_current_framebuffer_t)(void);
+typedef void      (*retro_proc_address_t)(void);
+typedef retro_proc_address_t (*retro_hw_get_proc_address_t)(const char *sym);
+
+/* Same layout as libretro.h (enum retro_hw_context_type is int-sized). */
+struct retro_hw_render_callback {
+	unsigned                            context_type;
+	retro_hw_context_reset_t            context_reset;
+	retro_hw_get_current_framebuffer_t  get_current_framebuffer;
+	retro_hw_get_proc_address_t         get_proc_address;
+	bool                                depth;
+	bool                                stencil;
+	bool                                bottom_left_origin;
+	unsigned                            version_major;
+	unsigned                            version_minor;
+	bool                                cache_context;
+	retro_hw_context_reset_t            context_destroy;
+	bool                                debug_context;
+};
 
 #define RETRO_DEVICE_JOYPAD   1
 #define RETRO_DEVICE_KEYBOARD 3
@@ -170,5 +195,12 @@ const char *ik_get_variable(const char *key);
  * (RETRO_RUMBLE_STRONG), hi = small/high-frequency one (RETRO_RUMBLE_WEAK). */
 bool ik_init_rumble(void);
 void ik_set_rumble(unsigned port, uint16_t lo, uint16_t hi);
+/* Hardware rendering: ask the frontend for a GL ES 3 context of its own
+ * (retro_load_game only). The core then hands frames over by drawing into
+ * ik_hw_framebuffer() from inside retro_run and calling ik_video_hw. */
+bool      ik_set_hw_render(void);
+unsigned  ik_hw_generation(void);  /* bumps at every context_reset; 0 until the first */
+uintptr_t ik_hw_framebuffer(void); /* the frontend's FBO, valid inside retro_run only */
+void      ik_video_hw(unsigned width, unsigned height);
 
 #endif
