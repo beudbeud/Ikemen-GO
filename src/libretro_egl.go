@@ -15,9 +15,11 @@ package main
 // exactly as it would to a window, and libretroPresentFrame reads it back.
 
 /*
-#cgo pkg-config: egl
+#cgo pkg-config: egl glesv2
 #include <EGL/egl.h>
 #include <stdlib.h>
+#include "libretro_glue.h"
+#include "libretro_egl_glue.h"
 
 // Resolved at runtime so this builds against an EGL 1.4 header too.
 #define IK_EGL_PLATFORM_SURFACELESS_MESA 0x31DD
@@ -36,10 +38,21 @@ import "C"
 
 import (
 	"fmt"
+	"os"
+
+	gl "github.com/leonkasovan/gl/v3.2/gles2"
 )
 
 func init() {
 	libretroHeadlessGL = libretroEGLContext
+	libretroHW.export = libretroHWExport
+	libretroHW.present = libretroHWPresent
+}
+
+// The engine's own display and context, for the dma-buf export.
+var libretroEGL struct {
+	dpy C.EGLDisplay
+	ctx C.EGLContext
 }
 
 // libretroEGLContext leaves the context current on the calling thread, which is
@@ -97,7 +110,96 @@ func libretroEGLContext(w, h int) error {
 	if C.eglMakeCurrent(dpy, surf, surf, ctx) == C.EGL_FALSE {
 		return eglErr("eglMakeCurrent")
 	}
+	libretroEGL.dpy, libretroEGL.ctx = dpy, ctx
 	return nil
+}
+
+// --- hardware rendering: frames shared with the frontend as dma-bufs -------
+//
+// The engine keeps the context above and draws its final pass into one of two
+// textures whose storage is exported as a dma-buf. Inside retro_run, on the
+// frontend's thread and context, the same buffer is imported and blitted into
+// the framebuffer the frontend asked us to draw into. No readback, no CPU
+// copy, and the frontend may recreate its context whenever it likes: the
+// engine's GL objects never live there.
+//
+// ponytail: ordering between the two contexts relies on the kernel's implicit
+// fencing on the shared buffer (every v3d job waits for earlier jobs on the
+// buffers it touches). If a driver ever shows tearing here, the upgrade path
+// is an EGL_ANDROID_native_fence_sync fence handed over with the frame.
+var libretroHWState struct {
+	w, h   int
+	frames [2]struct {
+		tex, fbo uint32
+		buf      C.ik_dmabuf
+	}
+	cur    int // the renderer draws into this one now
+	handed int // handed to the frontend; read on the retro thread while the game thread is parked
+	failed bool
+	warned bool
+}
+
+// libretroHWExport runs on the game thread after the frame's final pass:
+// it hands the current texture over and points the renderer at the other.
+func libretroHWExport(w, h int) bool {
+	hw := &libretroHWState
+	r, ok := gfx.(*Renderer_GLES32)
+	if !ok || hw.failed {
+		return false
+	}
+	if hw.w != w || hw.h != h {
+		// ponytail: the previous pair leaks on a resize; it is a rare event
+		// and the frontend's import still refers to those buffers.
+		for i := range hw.frames {
+			f := &hw.frames[i]
+			gl.GenTextures(1, &f.tex)
+			gl.BindTexture(gl.TEXTURE_2D, f.tex)
+			gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, int32(w), int32(h), 0, gl.RGBA, gl.UNSIGNED_BYTE, nil)
+			gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+			gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+			gl.GenFramebuffers(1, &f.fbo)
+			gl.BindFramebuffer(gl.FRAMEBUFFER, f.fbo)
+			gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, f.tex, 0)
+			if gl.CheckFramebufferStatus(gl.FRAMEBUFFER) != gl.FRAMEBUFFER_COMPLETE ||
+				!bool(C.ik_dmabuf_export(libretroEGL.dpy, libretroEGL.ctx, C.uint(f.tex), &f.buf)) {
+				hw.failed = true
+				fmt.Fprintln(os.Stderr, "Ikemen GO: GPU frame sharing failed:", C.GoString(C.ik_dmabuf_error()))
+				return false
+			}
+		}
+		hw.w, hw.h, hw.cur = w, h, 0
+		// This frame already went to the previous target: carry it over.
+		prev := r.SetPresentFramebuffer(hw.frames[0].fbo)
+		gl.BindFramebuffer(gl.READ_FRAMEBUFFER, prev)
+		gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, hw.frames[0].fbo)
+		gl.BlitFramebuffer(0, 0, int32(w), int32(h), 0, 0, int32(w), int32(h), gl.COLOR_BUFFER_BIT, gl.NEAREST)
+	}
+	gl.Flush() // submit the frame's jobs: the frontend's blit orders after them
+	hw.handed = hw.cur
+	hw.cur ^= 1
+	r.SetPresentFramebuffer(hw.frames[hw.cur].fbo)
+	return true
+}
+
+// libretroHWPresent runs on the retro thread inside retro_run, with the
+// frontend's context current.
+func libretroHWPresent(w, h int) {
+	hw := &libretroHWState
+	gen := C.ik_hw_generation()
+	if gen == 0 || hw.failed || hw.w == 0 {
+		C.ik_video(nil, C.uint(w), C.uint(h), 0) // nothing shareable yet: repeat the last frame
+		return
+	}
+	f := &hw.frames[hw.handed]
+	if !bool(C.ik_dmabuf_blit(C.int(hw.handed), &f.buf, C.uint(w), C.uint(h), gen, C.ik_hw_framebuffer())) {
+		if !hw.warned {
+			hw.warned = true
+			libretroMessage("Ikemen GO: GPU frame sharing failed: " + C.GoString(C.ik_dmabuf_error()))
+		}
+		C.ik_video(nil, C.uint(w), C.uint(h), 0)
+		return
+	}
+	C.ik_video_hw(C.uint(w), C.uint(h))
 }
 
 func eglErr(what string) error {

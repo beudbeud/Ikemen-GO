@@ -570,10 +570,18 @@ type Renderer_GLES32 struct {
 	// the context in Init.
 	glslVersion string
 	// Double-buffered pixel-pack buffers for the libretro async readback.
-	pboIDs   [2]uint32
-	pboSize  int
-	pboValid [2]bool
-	pboCur   int
+	pboIDs    [2]uint32
+	pboSize   int
+	pboValid  [2]bool
+	pboBGRA   bool // the pack buffers hold BGRA (libretro byte order), not RGBA
+	pboCur    int
+	pboMapped bool // pboIDs[pboCur] is still mapped from the previous readback
+	// flipOutput draws the final pass top-down, so a readback of framebuffer 0
+	// needs no row flip (libretro core: the frontend wants top-down rows).
+	flipOutput bool
+	// presentFBO is where the final pass lands: the window (0), or a texture
+	// the libretro core shares with its frontend.
+	presentFBO uint32
 	GLES32State
 }
 type GLES32State struct {
@@ -842,6 +850,8 @@ func (r *Renderer_GLES32) Init() {
 	// Identity shader (no post-processing). This should be the last one in modern OpenGL
 	identShader, _ := r.newShaderProgram(identVertShader, identFragShader, "", "Identity Postprocess", true)
 	identShader.RegisterAttributes("VertCoord")
+	identShader.RegisterUniforms("FlipY")
+	r.flipOutput = libretroPresent != nil && !libretroHWRender
 	//identShader.RegisterUniforms("Texture_GLES32", "TextureSize", "CurrentTime") // None of these are used
 
 	// Configure postVAO for the identity shader's attribute location
@@ -1116,10 +1126,13 @@ func (r *Renderer_GLES32) EndFrame() {
 	// set the viewport to the unscaled bounds for post-processing
 	gl.Viewport(x, y, width, height)
 	// clear both of our post-processing FBOs to make sure
-	// nothing's there. the output is set later
-	for i := 0; i < 2; i++ {
-		gl.BindFramebuffer(gl.FRAMEBUFFER, r.fbo_pp[i])
-		gl.Clear(gl.COLOR_BUFFER_BIT)
+	// nothing's there. the output is set later. A single pass never touches
+	// them: it goes straight from the frame FBO to the screen.
+	if len(r.postShaderSelect) > 1 {
+		for i := 0; i < 2; i++ {
+			gl.BindFramebuffer(gl.FRAMEBUFFER, r.fbo_pp[i])
+			gl.Clear(gl.COLOR_BUFFER_BIT)
+		}
 	}
 	r.SetActiveTexture0() //gl.ActiveTexture(gl.TEXTURE0) // later referred to by Texture_GL
 
@@ -1169,7 +1182,7 @@ func (r *Renderer_GLES32) EndFrame() {
 			// to FB0, the default frame buffer that the user sees
 			x, y, width, height := sys.window.GetScaledViewportSize()
 			gl.Viewport(x, y, width, height)
-			gl.BindFramebuffer(gl.FRAMEBUFFER, 0)
+			gl.BindFramebuffer(gl.FRAMEBUFFER, r.presentFBO)
 			// clear FB0 just to make sure
 			gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 		}
@@ -1183,6 +1196,13 @@ func (r *Renderer_GLES32) EndFrame() {
 		}
 		if loc, ok := postShader.uniforms["CurrentTime"]; ok && loc >= 0 {
 			r.SetUniformFSub(loc, float32(time))
+		}
+		if loc, ok := postShader.uniforms["FlipY"]; ok && loc >= 0 {
+			var flip float32
+			if r.flipOutput && i == len(r.postShaderSelect)-1 {
+				flip = 1
+			}
+			gl.Uniform1f(loc, flip)
 		}
 
 		gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, scaleMode)
@@ -1773,14 +1793,20 @@ func (r *Renderer_GLES32) ReadPixelsBGRA(data []uint8, width, height int) bool {
 }
 
 // ReadPixelsAsync queues an asynchronous readback of the current frame into a
-// pixel-pack buffer and hands the PREVIOUS frame's pixels (RGBA, bottom-up) to
-// consume -- so the GPU never has to stall for this frame's pixels, at the
-// price of one frame of latency. Returns (supported, consumed): supported
-// false means the caller should fall back to the synchronous path for good;
-// consumed false with supported true is the warm-up frame after a start or a
-// resize, where no previous frame exists yet.
-func (r *Renderer_GLES32) ReadPixelsAsync(width, height int, consume func(rgba []byte)) (bool, bool) {
+// pixel-pack buffer and returns the PREVIOUS frame's pixels, mapped and left
+// mapped until the next call -- so the GPU never has to stall for this frame's
+// pixels, at the price of one frame of latency. Rows are top-down when
+// FrameTopDown reports so, in BGRA when bgra is true, RGBA otherwise.
+// supported false means the caller should fall back to the synchronous path
+// for good; a nil slice with supported true is the warm-up frame after a
+// start or a resize, where no previous frame exists yet.
+func (r *Renderer_GLES32) ReadPixelsAsync(width, height int) (px []byte, bgra, supported bool) {
 	sz := width * height * 4
+	if r.pboMapped {
+		gl.BindBuffer(gl.PIXEL_PACK_BUFFER, r.pboIDs[r.pboCur])
+		gl.UnmapBuffer(gl.PIXEL_PACK_BUFFER)
+		r.pboMapped = false
+	}
 	if r.pboSize != sz {
 		if r.pboIDs[0] != 0 {
 			gl.DeleteBuffers(2, &r.pboIDs[0])
@@ -1793,6 +1819,7 @@ func (r *Renderer_GLES32) ReadPixelsAsync(width, height int, consume func(rgba [
 		r.pboSize = sz
 		r.pboValid[0], r.pboValid[1] = false, false
 		r.pboCur = 0
+		r.pboBGRA = true // EXT_read_format_bgra: retried on every resize, RGBA if refused
 	}
 
 	gl.BindFramebuffer(gl.READ_FRAMEBUFFER, 0)
@@ -1800,28 +1827,51 @@ func (r *Renderer_GLES32) ReadPixelsAsync(width, height int, consume func(rgba [
 		// drain stale errors so the check below is attributable to this read
 	}
 	gl.BindBuffer(gl.PIXEL_PACK_BUFFER, r.pboIDs[r.pboCur])
-	gl.ReadPixels(0, 0, int32(width), int32(height), gl.RGBA, gl.UNSIGNED_BYTE, nil)
-	if gl.GetError() != gl.NO_ERROR {
-		gl.BindBuffer(gl.PIXEL_PACK_BUFFER, 0)
-		gl.DeleteBuffers(2, &r.pboIDs[0])
-		r.pboIDs[0], r.pboIDs[1], r.pboSize = 0, 0, 0
-		return false, false
+	// BGRA is libretro's XRGB8888 byte order: the readback then needs no
+	// per-pixel swap.
+	const glBGRA = 0x80E1
+	if r.pboBGRA {
+		gl.ReadPixels(0, 0, int32(width), int32(height), glBGRA, gl.UNSIGNED_BYTE, nil)
+		if gl.GetError() != gl.NO_ERROR {
+			r.pboBGRA = false
+			r.pboValid[0], r.pboValid[1] = false, false
+		}
+	}
+	if !r.pboBGRA {
+		gl.ReadPixels(0, 0, int32(width), int32(height), gl.RGBA, gl.UNSIGNED_BYTE, nil)
+		if gl.GetError() != gl.NO_ERROR {
+			gl.BindBuffer(gl.PIXEL_PACK_BUFFER, 0)
+			gl.DeleteBuffers(2, &r.pboIDs[0])
+			r.pboIDs[0], r.pboIDs[1], r.pboSize = 0, 0, 0
+			return nil, false, false
+		}
 	}
 	r.pboValid[r.pboCur] = true
 
 	prev := r.pboCur ^ 1
-	consumed := false
 	if r.pboValid[prev] {
 		gl.BindBuffer(gl.PIXEL_PACK_BUFFER, r.pboIDs[prev])
 		if ptr := gl.MapBufferRange(gl.PIXEL_PACK_BUFFER, 0, sz, gl.MAP_READ_BIT); ptr != nil {
-			consume(unsafe.Slice((*byte)(ptr), sz))
-			gl.UnmapBuffer(gl.PIXEL_PACK_BUFFER)
-			consumed = true
+			px = unsafe.Slice((*byte)(ptr), sz)
+			r.pboMapped = true
 		}
 	}
 	gl.BindBuffer(gl.PIXEL_PACK_BUFFER, 0)
 	r.pboCur = prev
-	return true, consumed
+	return px, r.pboBGRA, true
+}
+
+// FrameTopDown reports whether framebuffer 0 holds the picture top-down.
+func (r *Renderer_GLES32) FrameTopDown() bool {
+	return r.flipOutput
+}
+
+// SetPresentFramebuffer redirects the final pass from the window to fbo,
+// returning the previous target.
+func (r *Renderer_GLES32) SetPresentFramebuffer(fbo uint32) uint32 {
+	prev := r.presentFBO
+	r.presentFBO = fbo
+	return prev
 }
 
 func (r *Renderer_GLES32) EnableScissor(x, y, width, height int32) {

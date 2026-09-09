@@ -3,6 +3,7 @@
 /* Frontend callback storage plus the trivial libretro entry points that carry
  * no engine state. Everything with behaviour lives in libretro.go. */
 #include "libretro_glue.h"
+#include <string.h>
 
 static retro_environment_t        environ_cb;
 static retro_video_refresh_t      video_cb;
@@ -226,6 +227,37 @@ IK_API void retro_set_input_state(retro_input_state_t cb)          { input_state
 bool ik_env(unsigned cmd, void *data)
 {
 	return environ_cb ? environ_cb(cmd, data) : false;
+}
+
+static struct retro_hw_render_callback hw_render;
+static unsigned hw_generation;
+
+static void ik_hw_context_reset(void)   { hw_generation++; }
+static void ik_hw_context_destroy(void) {}
+
+bool ik_set_hw_render(void)
+{
+	memset(&hw_render, 0, sizeof hw_render);
+	hw_render.context_type       = RETRO_HW_CONTEXT_OPENGLES3;
+	hw_render.version_major      = 3;
+	hw_render.context_reset      = ik_hw_context_reset;
+	hw_render.context_destroy    = ik_hw_context_destroy;
+	hw_render.bottom_left_origin = true;
+	hw_render.cache_context      = true;
+	return environ_cb && environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER, &hw_render);
+}
+
+unsigned ik_hw_generation(void) { return hw_generation; }
+
+uintptr_t ik_hw_framebuffer(void)
+{
+	return hw_render.get_current_framebuffer ? hw_render.get_current_framebuffer() : 0;
+}
+
+void ik_video_hw(unsigned width, unsigned height)
+{
+	if (video_cb)
+		video_cb(RETRO_HW_FRAME_BUFFER_VALID, width, height, 0);
 }
 
 void ik_video(const void *data, unsigned width, unsigned height, size_t pitch)
