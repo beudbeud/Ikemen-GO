@@ -8580,7 +8580,7 @@ func (r *Renderer_VK) createCustomSpriteProgram(fragSpv []byte) (*VulkanProgramI
 	return program, nil
 }
 
-func (r *Renderer_VK) SetSpritePipeline(shaderName string) {
+func (r *Renderer_VK) SetSpritePipeline(shaderName string, variant int) {
 	targetProgram := r.spriteProgram
 	if shaderName != "" {
 		if id, ok := r.customShaderMap[shaderName]; ok {

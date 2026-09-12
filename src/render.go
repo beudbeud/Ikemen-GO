@@ -19,6 +19,23 @@ type Texture interface {
 	CopyData(src *Texture)
 }
 
+// Sprite shader variants: a bit per block the shader can leave out. The
+// renderer compiles one program per combination, because v3d flattens a
+// uniform branch instead of skipping it -- the fragment pays for both sides
+// either way, so the only way not to pay is to not compile the side in.
+const (
+	SpriteShaderNoPalFX = 1 << iota
+	SpriteShaderNoTrapez
+	SpriteShaderIndexed // palette lookup rather than an RGBA texture
+
+	// SpriteShaderVariants is how many combinations of the bits above exist.
+	SpriteShaderVariants = 1 << iota
+
+	// SpriteShaderFull keeps every branch, for callers that cannot say in
+	// advance which side a draw takes.
+	SpriteShaderFull = -1
+)
+
 type Renderer interface {
 	GetName() string
 	DebugInfo() string
@@ -34,7 +51,7 @@ type Renderer interface {
 	//SetPipeline()
 	LoadCustomSpriteShader(shaderName string, shaderData []byte) uint32
 	UnloadCustomSpriteShader(shaderName string)
-	SetSpritePipeline(shaderName string)
+	SetSpritePipeline(shaderName string, variant int)
 	SetCustomUniforms(params [16]float32)
 	NeedsGrabPass() bool
 	ResolveBackBuffer() Texture
@@ -692,9 +709,30 @@ func RenderSprite(rp RenderParams) {
 	proj := gfx.OrthographicProjectionMatrix(0, float32(sys.scrrect[2]), 0, float32(sys.scrrect[3]), -65535, 65535)
 	modelview := mgl.Translate3D(0, float32(sys.scrrect[3]), 0)
 
+	// Pick the sprite shader variant: the blocks this draw cannot use are
+	// compiled out rather than branched over, which is what v3d needs to
+	// actually skip them.
+	isTrapez := Abs(Abs(rp.xts)-Abs(rp.xbs)) > 0.001
+	variant := 0
+	// Every PalFX input neutral means the shader's whole PalFX block is a
+	// no-op. renderWithBlending() re-enables PalFX mid-draw for the
+	// subtractive modes and for invertblend, so those keep the full shader.
+	if spfx.invblend == 0 && !spfx.neg &&
+		spfx.hue == 0 && spfx.gray == 0 &&
+		spfx.add == [3]float32{0, 0, 0} && tint[3] == 0 &&
+		rp.blendMode != TT_sub && rp.blendMode != TT_subadd {
+		variant |= SpriteShaderNoPalFX
+	}
+	if !isTrapez {
+		variant |= SpriteShaderNoTrapez
+	}
+	if rp.paltex != nil {
+		variant |= SpriteShaderIndexed
+	}
+
 	// Heavy state change
 	// Because renderWithBlending() sometimes needs 2 passes, we'll do most of the setup outside of render()
-	gfx.SetSpritePipeline(rp.customShader.name)
+	gfx.SetSpritePipeline(rp.customShader.name, variant)
 
 	gfx.EnableScissor(rp.window[0], rp.window[1], rp.window[2], rp.window[3])
 
@@ -702,7 +740,7 @@ func RenderSprite(rp RenderParams) {
 	gfx.SetUniformMatrix("projection", proj[:])
 	gfx.SetUniformI("isFlat", 0)
 	gfx.SetUniformI("mask", int(rp.mask))
-	gfx.SetUniformI("isTrapez", int(Btoi(Abs(Abs(rp.xts)-Abs(rp.xbs)) > 0.001)))
+	gfx.SetUniformI("isTrapez", int(Btoi(isTrapez)))
 
 	gfx.SetUniformF("gray", spfx.gray)
 	gfx.SetUniformF("hue", spfx.hue)
@@ -964,7 +1002,7 @@ func FillRect(rect [4]int32, color uint32, alpha [2]int32, fx *PalFX) {
 	x2, y2 := float32(rect[0]+rect[2]), -float32(rect[1]+rect[3])
 
 	// Prepare the heavy state
-	gfx.SetSpritePipeline("")
+	gfx.SetSpritePipeline("", SpriteShaderFull)
 
 	// Set geometry
 	gfx.SetVertexData(

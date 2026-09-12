@@ -551,7 +551,10 @@ type Renderer_GLES32 struct {
 	grabTexture     *Texture_GLES32
 	// Shader and vertex data for primitive rendering
 	spriteShader *ShaderProgram_GLES32
-	vertexBuffer uint32
+	// The same program with the parts a given draw cannot use compiled out;
+	// see SetSpritePipeline. Indexed by the SpriteShader* bits.
+	spriteShaderVariants [SpriteShaderVariants]*ShaderProgram_GLES32
+	vertexBuffer         uint32
 	// Shader and index data for 3D model rendering
 	shadowMapShader         *ShaderProgram_GLES32
 	modelShader             *ShaderProgram_GLES32
@@ -579,6 +582,10 @@ type Renderer_GLES32 struct {
 	// flipOutput draws the final pass top-down, so a readback of framebuffer 0
 	// needs no row flip (libretro core: the frontend wants top-down rows).
 	flipOutput bool
+	// directFrame is set when BeginFrame pointed the renderer straight at
+	// presentFBO, so EndFrame has nothing left to copy.
+	directFrame bool
+
 	// presentFBO is where the final pass lands: the window (0), or a texture
 	// the libretro core shares with its frontend.
 	presentFBO uint32
@@ -801,6 +808,32 @@ func (r *Renderer_GLES32) Init() {
 	r.spriteShader.RegisterUniforms("modelview", "projection", "x1x2x4x3",
 		"alpha", "tint", "mask", "neg", "gray", "add", "mult", "isFlat", "isRgba", "isTrapez", "hue")
 	r.spriteShader.RegisterTextures("pal", "tex")
+
+	// The same shader with the blocks a draw cannot use compiled out. Both are
+	// uniform branches that v3d flattens, so leaving them in costs every
+	// fragment whether or not the draw needs them. The uniforms a variant
+	// drops resolve to location -1, which the SetUniform* helpers already
+	// skip, so the draw path needs no special case beyond picking the program.
+	for v := 0; v < len(r.spriteShaderVariants); v++ {
+		// Sprite draws never take the flat-colour path; FillRect asks for
+		// the unspecialised program instead.
+		defs, name := "#define IK_NO_FLAT\n#define IK_RGBA\n", " rgba"
+		if v&SpriteShaderIndexed != 0 {
+			defs, name = "#define IK_NO_FLAT\n#define IK_INDEXED\n", " indexed"
+		}
+		if v&SpriteShaderNoPalFX != 0 {
+			defs, name = defs+"#define IK_NO_PALFX\n", name+" no PalFX"
+		}
+		if v&SpriteShaderNoTrapez != 0 {
+			defs, name = defs+"#define IK_NO_TRAPEZ\n", name+" no trapez"
+		}
+		p, _ := r.newShaderProgram(vertShader, defs+fragShader, "", "Main Shader ("+strings.TrimSpace(name)+")", true)
+		p.RegisterAttributes("position", "uv")
+		p.RegisterUniforms("modelview", "projection", "x1x2x4x3",
+			"alpha", "tint", "mask", "neg", "gray", "add", "mult", "isFlat", "isRgba", "isTrapez", "hue")
+		p.RegisterTextures("pal", "tex")
+		r.spriteShaderVariants[v] = p
+	}
 
 	// Configure spriteVAO
 	gl.BindVertexArray(r.spriteVAO)
@@ -1093,7 +1126,21 @@ func (r *Renderer_GLES32) IsShadowEnabled() bool {
 
 func (r *Renderer_GLES32) BeginFrame(clearColor bool) {
 	//gl.BindVertexArray(r.vao)
-	gl.BindFramebuffer(gl.FRAMEBUFFER, r.fbo)
+	// When the final pass would be a plain copy of the scene into presentFBO,
+	// draw the scene there to begin with. On a Pi 5 at 1920x1080 that copy is
+	// ~2ms of memory traffic plus a GPU job, on a frame budget of 16.7ms.
+	// Anything that needs the scene as a texture -- a post-processing chain, an
+	// MSAA resolve, a pack shader with a grab pass -- or a letterboxed viewport
+	// that does not cover the target, still goes through r.fbo.
+	x, y, vw, vh := sys.window.GetScaledViewportSize()
+	r.directFrame = r.presentFBO != 0 && sys.msaa == 0 &&
+		len(r.postShaderSelect) == 1 && len(r.customShaders) == 0 &&
+		x == 0 && y == 0 && vw == sys.scrrect[2] && vh == sys.scrrect[3]
+	if r.directFrame {
+		gl.BindFramebuffer(gl.FRAMEBUFFER, r.presentFBO)
+	} else {
+		gl.BindFramebuffer(gl.FRAMEBUFFER, r.fbo)
+	}
 	gl.Viewport(0, 0, sys.scrrect[2], sys.scrrect[3])
 	if clearColor {
 		gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
@@ -1104,6 +1151,15 @@ func (r *Renderer_GLES32) BeginFrame(clearColor bool) {
 
 func (r *Renderer_GLES32) EndFrame() {
 	if len(r.fbo_pp) == 0 {
+		return
+	}
+	if r.directFrame {
+		// The scene was drawn straight into presentFBO; only the state the
+		// post pass would have reset is left to do.
+		r.DisableScissor()
+		r.DisableBlending()
+		r.SetDepthTest(false)
+		r.SetDepthMask(false)
 		return
 	}
 
@@ -1349,8 +1405,8 @@ func (r *Renderer_GLES32) DisableBlending() {
 }
 
 func (r *Renderer_GLES32) SetPipeline() {
-	// Do nothing if we were already using the sprite shader
-	if r.program == r.spriteShader.program {
+	// Do nothing if we were already using a sprite shader
+	if r.isSpriteProgram(r.program) {
 		return
 	}
 
@@ -1906,8 +1962,8 @@ func (r *Renderer_GLES32) SetUniformISub(loc int32, val int32) {
 		return
 	}
 
-	// Cached path for the sprite shader
-	if r.program == r.spriteShader.program {
+	// Cached path for the sprite shaders
+	if r.isSpriteProgram(r.program) {
 		key := (r.program << 16) | uint32(loc)
 		if old, exists := r.uniformICache[key]; exists && old == val {
 			return
@@ -1923,8 +1979,8 @@ func (r *Renderer_GLES32) SetUniformFSub(loc int32, values ...float32) {
 		return
 	}
 
-	// Cached path for the sprite shader
-	if r.program == r.spriteShader.program {
+	// Cached path for the sprite shaders
+	if r.isSpriteProgram(r.program) {
 		key := (r.program << 16) | uint32(loc)
 
 		switch len(values) {
@@ -2130,9 +2186,9 @@ func (r *Renderer_GLES32) SetTextureSub(uMap map[string]int32, tMap map[string]i
 	t := tex.(*Texture_GLES32)
 	loc := uMap[name]
 
-	// Cached path for the sprite shader
+	// Cached path for the sprite shaders
 	// Note: The cache doesn't care if a texture is "tex" or "pal"
-	if r.program == r.spriteShader.program {
+	if r.isSpriteProgram(r.program) {
 		// Increment reference timer
 		r.texCacheTimer++
 
@@ -2449,8 +2505,23 @@ func (r *Renderer_GLES32) UnloadCustomSpriteShader(shaderName string) {
 	}
 }
 
-func (r *Renderer_GLES32) SetSpritePipeline(shaderName string) {
+// isSpriteProgram reports whether prog is one of the sprite shader variants.
+func (r *Renderer_GLES32) isSpriteProgram(prog uint32) bool {
+	for _, v := range r.spriteShaderVariants {
+		if v != nil && prog == v.program {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Renderer_GLES32) SetSpritePipeline(shaderName string, variant int) {
 	targetShader := r.spriteShader
+	if variant >= 0 {
+		if v := r.spriteShaderVariants[variant%len(r.spriteShaderVariants)]; v != nil {
+			targetShader = v
+		}
+	}
 	if shaderName != "" {
 		if id, ok := r.customShaderMap[shaderName]; ok {
 			if shader, ok := r.customShaders[id]; ok {

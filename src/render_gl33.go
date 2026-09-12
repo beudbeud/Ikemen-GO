@@ -2309,7 +2309,7 @@ func (r *Renderer_GL33) UnloadCustomSpriteShader(shaderName string) {
 	}
 }
 
-func (r *Renderer_GL33) SetSpritePipeline(shaderName string) {
+func (r *Renderer_GL33) SetSpritePipeline(shaderName string, variant int) {
 	targetShader := r.spriteShader
 	if shaderName != "" {
 		if id, ok := r.customShaderMap[shaderName]; ok {
