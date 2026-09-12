@@ -130,8 +130,8 @@ func libretroEGLContext(w, h int) error {
 var libretroHWState struct {
 	w, h   int
 	frames [2]struct {
-		tex, fbo uint32
-		buf      C.ik_dmabuf
+		tex, fbo, depth uint32
+		buf             C.ik_dmabuf
 	}
 	cur    int // the renderer draws into this one now
 	handed int // handed to the frontend; read on the retro thread while the game thread is parked
@@ -160,6 +160,13 @@ func libretroHWExport(w, h int) bool {
 			gl.GenFramebuffers(1, &f.fbo)
 			gl.BindFramebuffer(gl.FRAMEBUFFER, f.fbo)
 			gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, f.tex, 0)
+			// The renderer draws the scene straight in here when it can skip
+			// its final copy, and that path clears and tests depth.
+			gl.GenRenderbuffers(1, &f.depth)
+			gl.BindRenderbuffer(gl.RENDERBUFFER, f.depth)
+			gl.RenderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, int32(w), int32(h))
+			gl.BindRenderbuffer(gl.RENDERBUFFER, 0)
+			gl.FramebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, f.depth)
 			if gl.CheckFramebufferStatus(gl.FRAMEBUFFER) != gl.FRAMEBUFFER_COMPLETE ||
 				!bool(C.ik_dmabuf_export(libretroEGL.dpy, libretroEGL.ctx, C.uint(f.tex), &f.buf)) {
 				hw.failed = true

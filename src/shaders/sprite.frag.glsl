@@ -69,6 +69,13 @@ void main(void) {
 	vec4 final_mul = vec4(mult, alpha);
 
 	// Select flat color or textures
+#ifdef IK_NO_FLAT
+	// RenderSprite never draws a flat colour -- only FillRect does, and it
+	// asks for the unspecialised program. Keeping the branch here costs the
+	// sprite path anyway: v3d keeps both sides live, and the extra registers
+	// cut how many fragment threads it can keep in flight.
+	{
+#else
 	if (isFlat) {
 		c = tint; 
 
@@ -77,7 +84,13 @@ void main(void) {
 		final_add *= c.a;
 		final_mul.rgb *= alpha;
 	} else {
+#endif
 		vec2 uv = texcoord;
+#ifndef IK_NO_TRAPEZ
+		// Quads that are not trapezoids get a variant without this block. It
+		// is a uniform branch, but v3d flattens it and every fragment then
+		// pays its divide and gl_FragCoord read: 4ms a frame at 1920x1080 on
+		// a Pi 5, on a screen that has no trapezoid in it at all.
 		if (isTrapez) {
 			vec2 bounds = mix(x1x2x4x3.zw, x1x2x4x3.xy, uv.y);
 			float gap = bounds[1] - bounds[0];
@@ -86,10 +99,32 @@ void main(void) {
 			#endif
 			uv.x = (gl_FragCoord.x - bounds[0]) / gap;
 		}
+#endif
 
 		c = COMPAT_TEXTURE(tex, uv);
 
-		// Select with or without palette
+		// Select with or without palette.
+		//
+		// The caller always knows which of the two a draw needs, so it picks a
+		// variant with the other one compiled out. Leaving the choice to a
+		// uniform branch is what it looks like it should cost -- nothing --
+		// but v3d flattens it, and then every fragment of an RGBA sprite also
+		// runs the palette fetch it does not need. That alone was 5ms a frame
+		// at 1920x1080 on a screen made of RGBA layers.
+#if defined(IK_RGBA)
+		if (mask == -1) c.a = 1.0;
+		neg_base *= c.a;
+		final_add *= c.a;
+		final_mul.rgb *= alpha;
+#elif defined(IK_INDEXED)
+		// Palette lookup
+		#if __VERSION__ >= 450
+			c = COMPAT_TEXTURE(pal, vec2(palUV[0]+palUV[2]*c.r*0.9966, palUV[1]));
+		#else
+			c = COMPAT_TEXTURE(pal, vec2(c.r*0.9966, 0.5));
+		#endif
+		if (mask == -1) c.a = 1.0;
+#else
 		if (isRgba) {
 			if (mask == -1) c.a = 1.0;
 			neg_base *= c.a;
@@ -104,9 +139,20 @@ void main(void) {
 			#endif
 			if (mask == -1) c.a = 1.0;
 		}
+#endif
 	}
 
 	// Apply PalFX
+#ifdef IK_NO_PALFX
+	// The renderer binds this variant for draws whose PalFX and tint are all
+	// neutral, which on a screenpack is nearly every draw. The block below
+	// would compute mix(x, y, 0), +0 and *1 on every fragment; skipping it at
+	// compile time is worth 4ms a frame at 1280x720 on a Pi 5 (48 -> 60fps).
+	// A runtime `if` on the uniforms does not work: v3d flattens small
+	// branches into predication, so both sides run and the test is pure
+	// overhead -- measured 45fps, slower than doing the math unconditionally.
+	c *= final_mul;
+#else
 	// Hue
 	if (hue != 0.0) {
 		c.rgb = hue_shift(c.rgb, hue);
@@ -124,9 +170,14 @@ void main(void) {
 
 	// Apply tint
 	// Sprites only, because flat colors are already tinted
+#ifdef IK_NO_FLAT
+	c.rgb = mix(c.rgb, tint.rgb * c.a, tint.a);
+#else
 	if (!isFlat) {
 		c.rgb = mix(c.rgb, tint.rgb * c.a, tint.a);
 	}
+#endif
+#endif
 
 	FragColor = c;
 }
