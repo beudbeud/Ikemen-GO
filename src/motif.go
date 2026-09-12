@@ -1693,6 +1693,7 @@ func loadMotif(def string) (*Motif, error) {
 				}
 			}
 		}
+		migrateLegacyMenuCursor(userIniFile, defaultOnlyIni)
 		seedPauseMenuDefaults(userIniFile, defaultOnlyIni, iniFile)
 		overlayUserFirstWins(iniFile, userIniFile)
 
@@ -1890,6 +1891,49 @@ func (m *Motif) applyGlyphDefaultsFromMovelist() {
 		g.Scale = mg.Scale
 		g.Layerno = mg.Layerno
 		g.Localcoord = mg.Localcoord
+	}
+}
+
+// migrateLegacyMenuCursor rewrites the menu.cursor.* keys that old screenpacks
+// fed to their own menuarrow.lua mod (dead on this engine) into the native
+// menu.item.active.bg.* element, so the active menu item stays marked.
+// The bg only follows the active row with a non-zero spacing, hence the copy
+// of menu.item.spacing. Sections that already use the native keys are left alone.
+func migrateLegacyMenuCursor(user, defaults *ini.File) {
+	if user == nil {
+		return
+	}
+	const src, dst = "menu.cursor.", "menu.item.active.bg."
+	for _, sec := range user.Sections() {
+		var legacy []*ini.Key
+		spacing, native := "", false
+		for _, k := range sec.Keys() {
+			ln := strings.ToLower(k.Name())
+			switch {
+			case strings.HasPrefix(ln, src):
+				legacy = append(legacy, k)
+			case strings.HasPrefix(ln, dst):
+				native = true
+			case ln == "menu.item.spacing":
+				spacing, _ = iniFirstValue(k)
+			}
+		}
+		if len(legacy) == 0 || native {
+			continue
+		}
+		for _, k := range legacy {
+			v, _ := iniFirstValue(k)
+			_, _ = sec.NewKey(dst+strings.ToLower(k.Name())[len(src):], v)
+			sec.DeleteKey(k.Name())
+		}
+		if spacing == "" && defaults != nil {
+			if ds, err := defaults.GetSection(sec.Name()); err == nil && ds.HasKey("menu.item.spacing") {
+				spacing = ds.Key("menu.item.spacing").String()
+			}
+		}
+		if spacing != "" {
+			_, _ = sec.NewKey(dst+"spacing", spacing)
+		}
 	}
 }
 
