@@ -253,6 +253,7 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	libretroPads = MaxPlayerNo
 	lr.started = true
 	libretroStartProfile()
+	libretroBenchInit()
 
 	bootStart := time.Now()
 	go func() {
@@ -382,13 +383,20 @@ func libretroPresentFrame() {
 		return
 	}
 	t0 := time.Now()
-	if lr.st.on && !lr.st.reqAt.IsZero() {
-		d := t0.Sub(lr.st.reqAt)
-		lr.st.step += d
-		if d > lr.st.stepMax {
-			lr.st.stepMax = d
+	var step time.Duration
+	if !lr.st.reqAt.IsZero() {
+		step = t0.Sub(lr.st.reqAt)
+	}
+	if lr.st.on && step > 0 {
+		lr.st.step += step
+		if step > lr.st.stepMax {
+			lr.st.stepMax = step
 		}
 	}
+	// Before the export: that hands presentFBO over and points the renderer at
+	// the other buffer, so this is the last moment the frame is where a dump
+	// reads it.
+	libretroBenchFrame(w, h, step)
 	if lr.w != w || lr.h != h {
 		lr.w, lr.h = w, h
 		if !libretroHW.active {

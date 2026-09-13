@@ -316,6 +316,7 @@ func (f *Font_GLES32) renderGlyphBatch(vertices []float32, textureID uint32) {
 	// Sampling bind, safe to skip if this atlas is already bound
 	mr.bindTextureToUnit(0, gl.TEXTURE_2D, nil, textureID)
 	gl.DrawArrays(gl.TRIANGLES, 0, int32(len(vertices))/4)
+	glesDrawCalls++
 }
 
 func (r *FontRenderer_GLES32) ReleaseFontPipeline() {
