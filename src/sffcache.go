@@ -462,6 +462,7 @@ func sffCacheLoad(filename string, char, isActPal bool) *Sff {
 		dst, src := list[l.dst], list[l.src]
 		sys.mainThreadTask <- func() {
 			dst.Tex = src.Tex
+			dst.trim = src.trim
 		}
 	}
 	if r.err {
