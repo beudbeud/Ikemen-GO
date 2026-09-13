@@ -59,6 +59,10 @@ cp "$cfgdir/cores/retroarch-core-options.cfg" "$out/opts.cfg"
 sed -i "s|^ikemen_go_resolution = .*|ikemen_go_resolution = \"$res\"|" "$out/opts.cfg"
 {
 	echo "core_options_path = \"$out/opts.cfg\""
+	# Recalbox rewrites the shared config's system_directory for every game it
+	# launches (bios/stv after a Saturn game), and the core looks for its engine
+	# files there.
+	echo 'system_directory = "/recalbox/share/bios"'
 	echo 'quit_on_close_content = "1"'
 	if [ -n "$novsync" ]; then
 		echo 'video_vsync = "false"'
