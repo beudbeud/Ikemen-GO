@@ -591,6 +591,9 @@ type Sprite struct {
 	paltemp      []uint32
 	PalTex       Texture
 	sffv1BasePal bool // SFFv1 sprite palette duplicates the base palette
+	// trim is the texture-space box (u0, v0, u1, v1) outside which an indexed
+	// sprite holds nothing but colour 0; zero when there is no box worth it.
+	trim [4]float32
 }
 
 func (s *Sprite) isBlank() bool {
@@ -742,6 +745,7 @@ func (s *Sprite) shareCopy(src *Sprite) {
 	// Otherwise we can end up copying a nil texture over the good one or other race condition bugs
 	sys.mainThreadTask <- func() {
 		s.Tex = src.Tex
+		s.trim = src.trim
 	}
 
 	//s.paltemp = src.paltemp
@@ -806,10 +810,68 @@ func (s *Sprite) SetRaw(data []byte, sprWidth int32, sprHeight int32, sprDepth i
 // which owns the GL context. mainThreadTask is buffered deep enough (64k) that
 // a whole sff's uploads fit without the queuing thread having to drain.
 func (s *Sprite) uploadTexture(data []byte, w, h, depth int32, filter bool) {
+	var trim [4]float32
+	if depth == 8 {
+		trim = spriteTrim(data, w, h)
+	}
 	sys.mainThreadTask <- func() {
 		s.Tex = gfx.newTexture(w, h, depth, filter)
 		s.Tex.SetData(data)
+		s.trim = trim
 	}
+}
+
+// spriteTrim finds the box around the texels of an indexed bitmap that are
+// not colour 0, padded by one texel so that no sample at its edge can reach
+// past it. Screenpacks commonly ship full-screen canvases holding a small
+// figure: drawn whole, every transparent texel still costs the GPU a blended
+// fragment, which at 1920x1080 on a Pi 5 took a title screen from 60fps to
+// 45. The box is returned only when it saves at least a quarter of the quad.
+func spriteTrim(px []byte, w, h int32) [4]float32 {
+	if w <= 0 || h <= 0 || int64(len(px)) != int64(w)*int64(h) {
+		return [4]float32{}
+	}
+	blank := func(y int32) bool {
+		for _, c := range px[y*w : (y+1)*w] {
+			if c != 0 {
+				return false
+			}
+		}
+		return true
+	}
+	y0, y1 := int32(0), h-1
+	for y0 <= y1 && blank(y0) {
+		y0++
+	}
+	if y0 > y1 {
+		return [4]float32{} // all colour 0: rare, not worth a special case
+	}
+	for blank(y1) {
+		y1--
+	}
+	x0, x1 := w, int32(-1)
+	for y := y0; y <= y1; y++ {
+		row := px[y*w : (y+1)*w]
+		for x := int32(0); x < x0; x++ {
+			if row[x] != 0 {
+				x0 = x
+				break
+			}
+		}
+		for x := w - 1; x > x1; x-- {
+			if row[x] != 0 {
+				x1 = x
+				break
+			}
+		}
+	}
+	x0, y0 = Max(x0-1, 0), Max(y0-1, 0)
+	x1, y1 = Min(x1+1, w-1), Min(y1+1, h-1)
+	if int64(x1-x0+1)*int64(y1-y0+1)*4 > int64(w)*int64(h)*3 {
+		return [4]float32{}
+	}
+	return [4]float32{float32(x0) / float32(w), float32(y0) / float32(h),
+		float32(x1+1) / float32(w), float32(y1+1) / float32(h)}
 }
 
 func (s *Sprite) readHeader(r io.Reader, ofs, size *uint32, link *uint16) error {

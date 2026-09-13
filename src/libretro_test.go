@@ -464,3 +464,19 @@ func TestLibretroWritePPM(t *testing.T) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
 }
+
+func TestSpriteTrim(t *testing.T) {
+	px := make([]byte, 10*10)
+	px[3*10+4], px[5*10+6] = 7, 1 // figure spans x 4..6, y 3..5
+	// Padded by a texel: x 3..7, y 2..6.
+	if got, want := spriteTrim(px, 10, 10), [4]float32{0.3, 0.2, 0.8, 0.7}; got != want {
+		t.Errorf("trim = %v, want %v", got, want)
+	}
+	if got := spriteTrim(make([]byte, 100), 10, 10); got != [4]float32{} {
+		t.Errorf("blank sprite: trim = %v, want none", got)
+	}
+	px[0], px[99] = 1, 1 // figure now fills the canvas: nothing to save
+	if got := spriteTrim(px, 10, 10); got != [4]float32{} {
+		t.Errorf("full sprite: trim = %v, want none", got)
+	}
+}

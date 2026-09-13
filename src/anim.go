@@ -997,11 +997,18 @@ func (a *Animation) Draw(window *[4]int32, x, y, xcs, ycs, xs, xbs, ys,
 	blendMode, blendAlpha := a.alphaToBlend()
 
 	var paltex Texture
+	var trim [4]float32
 	if !a.isVideo {
 		var pal []uint32
 		pal, paltex = a.pal(pfx)
 		if a.spr.coldepth <= 8 && paltex == nil {
 			paltex = a.spr.CachePalTex(pal)
+		}
+		// Outside the trim box there is only colour 0. Masked, and with a
+		// transparent colour 0, those texels leave the frame untouched in every
+		// blend mode; a custom shader may use them anyway.
+		if paltex != nil && a.mask != -1 && shader.name == "" && len(pal) > 0 && pal[0]>>24 == 0 {
+			trim = a.spr.trim
 		}
 	}
 
@@ -1033,6 +1040,7 @@ func (a *Animation) Draw(window *[4]int32, x, y, xcs, ycs, xs, xbs, ys,
 		xOffset:        xoff * sys.widthScale,
 		yOffset:        yoff * sys.heightScale,
 		customShader:   shader,
+		trim:           trim,
 	}
 
 	RenderSprite(rp)
@@ -2130,6 +2138,7 @@ func (a *Anim) Copy() *Anim {
 		dst := newSprite()
 
 		dst.Tex = src.Tex
+		dst.trim = src.trim
 		dst.palidx = src.palidx
 		dst.coldepth = src.coldepth
 		// Copy arrays (if not slices, this is fine as-is)
