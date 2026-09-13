@@ -32,6 +32,10 @@ type ShaderProgram_GLES32 struct {
 	textures      map[string]int   // Sampler name to texture unit
 	name          string           // For debugging
 	needsGrabPass bool
+	// quad is the location of the vertex shader's quad[] uniform when it
+	// takes its vertices that way (IK_QUAD_UNIFORM), -1 when it reads them
+	// from the vertex buffer.
+	quad int32
 }
 
 var shaderCompileMutex sync.Mutex
@@ -81,7 +85,7 @@ func (r *Renderer_GLES32) newShaderProgram(vert, frag, geo, name string, crashWh
 	}
 
 	Logcat("GLES: Program linked, creating struct...")
-	s = &ShaderProgram_GLES32{program: prog, name: name}
+	s = &ShaderProgram_GLES32{program: prog, name: name, quad: -1}
 	s.attributes = make(map[string]int32)
 	s.uniforms = make(map[string]int32)
 	s.textures = make(map[string]int)
@@ -563,6 +567,7 @@ type Renderer_GLES32 struct {
 	modelVertexBuffer       [2]uint32
 	modelIndexBuffer        [2]uint32
 	spriteVAO               uint32
+	quadVAO                 uint32 // no arrays: for programs that take their quad as a uniform
 	modelVAO                uint32
 	modelEnvVAO             uint32
 	postVAO                 uint32
@@ -766,6 +771,7 @@ func (r *Renderer_GLES32) Init() {
 
 	// Generate VAO's
 	gl.GenVertexArrays(1, &r.spriteVAO)
+	gl.GenVertexArrays(1, &r.quadVAO)
 	gl.GenVertexArrays(1, &r.modelVAO)
 	gl.GenVertexArrays(1, &r.modelEnvVAO)
 	gl.GenVertexArrays(1, &r.postVAO)
@@ -827,8 +833,8 @@ func (r *Renderer_GLES32) Init() {
 		if v&SpriteShaderNoTrapez != 0 {
 			defs, name = defs+"#define IK_NO_TRAPEZ\n", name+" no trapez"
 		}
-		p, _ := r.newShaderProgram(vertShader, defs+fragShader, "", "Main Shader ("+strings.TrimSpace(name)+")", true)
-		p.RegisterAttributes("position", "uv")
+		p, _ := r.newShaderProgram("#define IK_QUAD_UNIFORM\n"+vertShader, defs+fragShader, "", "Main Shader ("+strings.TrimSpace(name)+")", true)
+		p.quad = gl.GetUniformLocation(p.program, gl.Str("quad\x00"))
 		p.RegisterUniforms("modelview", "projection", "x1x2x4x3",
 			"alpha", "tint", "mask", "neg", "gray", "add", "mult", "isFlat", "isRgba", "isTrapez", "hue")
 		p.RegisterTextures("pal", "tex")
@@ -2287,6 +2293,10 @@ func (r *Renderer_GLES32) SetShadowFrameCubeTexture(i uint32) {
 }
 
 func (r *Renderer_GLES32) SetVertexData(values ...float32) {
+	if p := r.currentProgram; p != nil && p.quad >= 0 && p.program == r.program && len(values) == 16 {
+		gl.Uniform4fv(p.quad, 4, &values[0])
+		return
+	}
 	data := f32.Bytes(binary.LittleEndian, values...)
 	gl.BindBuffer(gl.ARRAY_BUFFER, r.vertexBuffer)
 	gl.BufferData(gl.ARRAY_BUFFER, len(data), unsafe.Pointer(&data[0]), gl.STATIC_DRAW)
@@ -2556,7 +2566,11 @@ func (r *Renderer_GLES32) SetSpritePipeline(shaderName string, variant int) {
 	if r.program != targetShader.program {
 		r.currentProgram = targetShader
 		r.ChangeProgram(targetShader.program)
-		gl.BindVertexArray(r.spriteVAO)
+		if targetShader.quad >= 0 {
+			gl.BindVertexArray(r.quadVAO)
+		} else {
+			gl.BindVertexArray(r.spriteVAO)
+		}
 	}
 }
 
