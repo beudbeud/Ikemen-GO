@@ -312,6 +312,7 @@ func (f *Font_GLES32) renderGlyphBatch(vertices []float32, textureID uint32) {
 
 	gl.BindTexture(gl.TEXTURE_2D, textureID)
 	gl.DrawArrays(gl.TRIANGLES, 0, int32(len(vertices))/4)
+	glesDrawCalls++
 }
 
 func (r *FontRenderer_GLES32) ReleaseFontPipeline() {

@@ -5,7 +5,9 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/ini.v1"
 )
@@ -398,5 +400,67 @@ func TestLibretroEnvArgs(t *testing.T) {
 		if sys.cmdFlags[k] != v {
 			t.Fatalf("%s = %q, want %q (%v)", k, sys.cmdFlags[k], v, sys.cmdFlags)
 		}
+	}
+}
+
+func TestLibretroParseRange(t *testing.T) {
+	for _, c := range []struct {
+		in       string
+		from, to uint64
+		ok       bool
+	}{
+		{"600:2400", 600, 2400, true},
+		{"0:1", 0, 1, true},
+		{"2400:600", 0, 0, false}, // empty window
+		{"600", 0, 0, false},
+		{"a:b", 0, 0, false},
+	} {
+		from, to, ok := libretroParseRange(c.in)
+		if ok != c.ok || (ok && (from != c.from || to != c.to)) {
+			t.Errorf("%q: got %d,%d,%v want %d,%d,%v", c.in, from, to, ok, c.from, c.to, c.ok)
+		}
+	}
+}
+
+func TestLibretroBenchSummary(t *testing.T) {
+	// 100 frames: steps 1..100ms, so p50 is the 51st value and p95 the 96th.
+	steps := make([]time.Duration, 100)
+	draws := make([]uint64, 100)
+	for i := range steps {
+		steps[i] = time.Duration(i+1) * time.Millisecond
+		draws[i] = uint64(i)
+	}
+	got := libretroBenchSummary(steps, draws, 2*time.Second)
+	for _, want := range []string{
+		"frames=100", "fps=50.00", "step_ms_mean=50.500",
+		"step_ms_p50=51.000", "step_ms_p95=96.000", "step_ms_max=100.000",
+		"draws_mean=49.5", "draws_max=99",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary %q lacks %q", got, want)
+		}
+	}
+	if got := libretroBenchSummary(nil, nil, time.Second); !strings.Contains(got, "frames=0") {
+		t.Errorf("empty window: %q", got)
+	}
+}
+
+func TestLibretroWritePPM(t *testing.T) {
+	// 2x2 bottom-up RGBA; the PPM must be top-down RGB with alpha dropped.
+	rgba := []uint8{
+		1, 2, 3, 99, 4, 5, 6, 99, // bottom row
+		7, 8, 9, 99, 10, 11, 12, 99, // top row
+	}
+	path := filepath.Join(t.TempDir(), "f.ppm")
+	if err := libretroWritePPM(path, rgba, 2, 2); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append([]byte("P6\n2 2\n255\n"), 7, 8, 9, 10, 11, 12, 1, 2, 3, 4, 5, 6)
+	if string(got) != string(want) {
+		t.Fatalf("got %v, want %v", got, want)
 	}
 }

@@ -1266,6 +1266,7 @@ func (r *Renderer_GLES32) EndFrame() {
 
 		// construct the quad and draw it
 		gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4)
+		glesDrawCalls++
 	}
 }
 
@@ -2304,12 +2305,34 @@ func (r *Renderer_GLES32) SetModelIndexData(bufferIndex uint32, values ...uint32
 	gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(values)*4, unsafe.Pointer(&data.Bytes()[0]), gl.STATIC_DRAW)
 }
 
+// glesDrawCalls counts the per-frame draw calls the GLES renderer issues, for
+// the libretro A/B harness: batching work shows up here before it shows up in
+// frame times. Only the game thread draws, so a plain counter is enough.
+var glesDrawCalls uint64
+
 func (r *Renderer_GLES32) RenderQuad() {
 	gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4)
+	glesDrawCalls++
 }
 
 func (r *Renderer_GLES32) RenderElements(mode PrimitiveMode, count, offset int) {
 	gl.DrawElementsWithOffset(r.MapPrimitiveMode(mode), int32(count), gl.UNSIGNED_INT, uintptr(offset))
+	glesDrawCalls++
+}
+
+// DrawCalls reports the draw calls issued since the renderer started.
+func (r *Renderer_GLES32) DrawCalls() uint64 { return glesDrawCalls }
+
+// ReadPresentedRGBA reads back the finished frame from wherever the final
+// pass landed (presentFBO), bottom-up RGBA. It stalls until the GPU is done,
+// so it is only for the harness's frame dumps, never the frame path.
+func (r *Renderer_GLES32) ReadPresentedRGBA(data []uint8, width, height int) bool {
+	gl.BindFramebuffer(gl.READ_FRAMEBUFFER, r.presentFBO)
+	for i := 0; i < 8 && gl.GetError() != gl.NO_ERROR; i++ {
+		// drain stale errors so the check below is attributable to this read
+	}
+	gl.ReadPixels(0, 0, int32(width), int32(height), gl.RGBA, gl.UNSIGNED_BYTE, unsafe.Pointer(&data[0]))
+	return gl.GetError() == gl.NO_ERROR
 }
 
 func (r *Renderer_GLES32) RenderShadowMapElements(mode PrimitiveMode, count, offset int) {
