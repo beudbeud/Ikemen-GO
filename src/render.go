@@ -236,6 +236,7 @@ type RenderParams struct {
 	shader         string
 	customShader   CustomShaderRenderData
 	trim           [4]float32 // Texture box outside which nothing can show (scissored off); zero = none
+	trimBlack      [4]float32 // Box outside which the texels are black: nothing shows when blending adds
 }
 
 type ShaderTexture struct {
@@ -303,8 +304,31 @@ func (rp *RenderParams) IsValid() bool {
 }
 
 func drawQuads(modelview mgl.Mat4, rp *RenderParams, x1, y1, x2, y2, x3, y3, x4, y4 float32) {
-	if rp.trim[2] != 0 && !trimScissor(rp, x1, y1, x2, y2, x3, y3, x4, y4) {
-		return
+	if rp.trim[2] != 0 || libretroFill != nil {
+		full := [4]float32{0, 0, 1, 1}
+		l, t, r, b := quadRect(rp, full, x1, y1, x2, y2, x3, y3, x4, y4)
+		// The report wants what reaches the screen; a window can be larger.
+		area := float32(Max(Min(r, sys.scrrect[2])-Max(l, 0), 0) * Max(Min(b, sys.scrrect[3])-Max(t, 0), 0))
+		if rp.trim[2] != 0 {
+			l, t, r, b = quadRect(rp, rp.trim, x1, y1, x2, y2, x3, y3, x4, y4)
+		}
+		drawn := float32(Max(r-l, 0) * Max(b-t, 0))
+		if libretroFill != nil {
+			libretroFill(rp.tex, area, float32(Max(Min(r, sys.scrrect[2])-Max(l, 0), 0)*Max(Min(b, sys.scrrect[3])-Max(t, 0), 0)))
+		}
+		if rp.trim[2] != 0 {
+			// Clip the draw to the trim box. The quad itself is left whole on
+			// purpose: a smaller quad over the same box would change how the
+			// GPU interpolates texture coordinates, and at a 2.25x upscale
+			// many pixel centres sit exactly on a texel edge -- the ties then
+			// break the other way and the picture is no longer bit-identical.
+			// The scissor only removes fragments, all of them sampling empty
+			// texels, and v3d drops those before shading them.
+			if drawn == 0 {
+				return
+			}
+			gfx.EnableScissor(l, t, r-l, b-t)
+		}
 	}
 	gfx.SetUniformMatrix("modelview", modelview[:])
 	gfx.SetUniformF("x1x2x4x3", x1, x2, x4, x3) // this uniform is optional
@@ -324,19 +348,11 @@ func drawQuads(modelview mgl.Mat4, rp *RenderParams, x1, y1, x2, y2, x3, y3, x4,
 	gfx.RenderQuad()
 }
 
-// trimScissor clips the draw to the screen rectangle over the sprite's trim
-// box, intersected with its window, and reports whether anything is left.
-//
-// The quad itself is left whole on purpose. A smaller quad over the same box
-// would change how the GPU interpolates texture coordinates, and at a 2.25x
-// upscale many pixel centres sit exactly on a texel edge: the ties then break
-// the other way and the picture is no longer bit-identical. The scissor only
-// removes fragments -- all of them sampling colour 0 -- and v3d drops those
-// before shading them.
-//
-// Only valid for the unrotated path, where the quad is in screen pixels once
-// flipped: RenderSprite clears the trim otherwise.
-func trimScissor(rp *RenderParams, x1, y1, x2, y2, x3, y3, x4, y4 float32) bool {
+// quadRect returns the screen pixels (left, top, right, bottom) over the
+// texture box (u0, v0, u1, v1) of a quad, within the draw's window. Exact for
+// the unrotated path, where the quad is in screen pixels once flipped -- the
+// only one RenderSprite lets a trim through; a bounding box otherwise.
+func quadRect(rp *RenderParams, box [4]float32, x1, y1, x2, y2, x3, y3, x4, y4 float32) (l, t, r, b int32) {
 	// p4, p3, p1, p2 sit at texture (0,0), (1,0), (0,1), (1,1).
 	at := func(u, v float32) (float32, float32) {
 		return x4 + (x3-x4)*u + (x1-x4)*v + (x2-x1-x3+x4)*u*v,
@@ -344,23 +360,15 @@ func trimScissor(rp *RenderParams, x1, y1, x2, y2, x3, y3, x4, y4 float32) bool 
 	}
 	minX, minY := float32(math.MaxFloat32), float32(math.MaxFloat32)
 	maxX, maxY := -minX, -minY
-	for _, uv := range [4][2]float32{{rp.trim[0], rp.trim[1]}, {rp.trim[2], rp.trim[1]},
-		{rp.trim[0], rp.trim[3]}, {rp.trim[2], rp.trim[3]}} {
+	for _, uv := range [4][2]float32{{box[0], box[1]}, {box[2], box[1]}, {box[0], box[3]}, {box[2], box[3]}} {
 		x, y := at(uv[0], uv[1])
 		y = -y // quad y runs up from the top edge; the scissor's runs down
 		minX, maxX = Min(minX, x), Max(maxX, x)
 		minY, maxY = Min(minY, y), Max(maxY, y)
 	}
 	w := rp.window
-	left := Max(int32(math.Floor(float64(minX))), w[0])
-	top := Max(int32(math.Floor(float64(minY))), w[1])
-	right := Min(int32(math.Ceil(float64(maxX))), w[0]+w[2])
-	bottom := Min(int32(math.Ceil(float64(maxY))), w[1]+w[3])
-	if right <= left || bottom <= top {
-		return false
-	}
-	gfx.EnableScissor(left, top, right-left, bottom-top)
-	return true
+	return Max(int32(math.Floor(float64(minX))), w[0]), Max(int32(math.Floor(float64(minY))), w[1]),
+		Min(int32(math.Ceil(float64(maxX))), w[0]+w[2]), Min(int32(math.Ceil(float64(maxY))), w[1]+w[3])
 }
 
 func applyRotation(modelview mgl.Mat4, rp RenderParams) mgl.Mat4 {
@@ -756,10 +764,6 @@ func RenderSprite(rp RenderParams) {
 	// compiled out rather than branched over, which is what v3d needs to
 	// actually skip them.
 	isTrapez := Abs(Abs(rp.xts)-Abs(rp.xbs)) > 0.001
-	if isTrapez || !rp.rot.IsZero() {
-		// trimScissor needs a screen-aligned rectangle to clip to.
-		rp.trim = [4]float32{}
-	}
 	variant := 0
 	// Every PalFX input neutral means the shader's whole PalFX block is a
 	// no-op. renderWithBlending() re-enables PalFX mid-draw for the
@@ -775,6 +779,16 @@ func RenderSprite(rp RenderParams) {
 	}
 	if rp.paltex != nil {
 		variant |= SpriteShaderIndexed
+	}
+	// A black texel adds nothing when every pass adds to the destination
+	// unscaled (dst factor one) and no PalFX can lift it off black.
+	if rp.trimBlack[2] != 0 && variant&SpriteShaderNoPalFX != 0 && rp.blendAlpha[1] >= 255 &&
+		rp.blendMode != TT_none && rp.blendMode != TT_sub && rp.blendMode != TT_subadd {
+		rp.trim = rp.trimBlack
+	}
+	if isTrapez || !rp.rot.IsZero() {
+		// The trim scissor needs a screen-aligned rectangle to clip to.
+		rp.trim = [4]float32{}
 	}
 
 	// Heavy state change

@@ -591,9 +591,10 @@ type Sprite struct {
 	paltemp      []uint32
 	PalTex       Texture
 	sffv1BasePal bool // SFFv1 sprite palette duplicates the base palette
-	// trim is the texture-space box (u0, v0, u1, v1) outside which an indexed
-	// sprite holds nothing but colour 0; zero when there is no box worth it.
-	trim [4]float32
+	// trim holds texture-space boxes (u0, v0, u1, v1), zero when there is no
+	// box worth it: [0] outside which every texel is all zero, [1] outside
+	// which every texel is black, whatever its alpha (RGB sprites only).
+	trim [2][4]float32
 }
 
 func (s *Sprite) isBlank() bool {
@@ -810,30 +811,51 @@ func (s *Sprite) SetRaw(data []byte, sprWidth int32, sprHeight int32, sprDepth i
 // which owns the GL context. mainThreadTask is buffered deep enough (64k) that
 // a whole sff's uploads fit without the queuing thread having to drain.
 func (s *Sprite) uploadTexture(data []byte, w, h, depth int32, filter bool) {
-	var trim [4]float32
-	if depth == 8 {
-		trim = spriteTrim(data, w, h)
+	var trim [2][4]float32
+	switch depth {
+	case 8:
+		trim[0] = spriteTrim(data, w, h, 1, 1)
+	case 24:
+		trim[1] = spriteTrim(data, w, h, 3, 3)
+	case 32:
+		trim[0] = spriteTrim(data, w, h, 4, 4)
+		trim[1] = spriteTrim(data, w, h, 4, 3)
 	}
 	sys.mainThreadTask <- func() {
 		s.Tex = gfx.newTexture(w, h, depth, filter)
 		s.Tex.SetData(data)
 		s.trim = trim
+		if libretroFill != nil {
+			libretroFillSprites[s.Tex] = s
+		}
 	}
 }
 
-// spriteTrim finds the box around the texels of an indexed bitmap that are
-// not colour 0, padded by one texel so that no sample at its edge can reach
-// past it. Screenpacks commonly ship full-screen canvases holding a small
-// figure: drawn whole, every transparent texel still costs the GPU a blended
-// fragment, which at 1920x1080 on a Pi 5 took a title screen from 60fps to
-// 45. The box is returned only when it saves at least a quarter of the quad.
-func spriteTrim(px []byte, w, h int32) [4]float32 {
-	if w <= 0 || h <= 0 || int64(len(px)) != int64(w)*int64(h) {
+// spriteTrim finds the box around the texels of a bitmap whose first n bytes
+// are not all zero -- n = bpp for colour 0 or transparent black, 3 for black
+// at any alpha -- padded by one texel so that no sample at its edge, filtered
+// or not, can reach past it.
+// Screenpacks commonly ship full-screen canvases holding a small figure:
+// drawn whole, every empty texel still costs the GPU a blended fragment,
+// which at 1920x1080 on a Pi 5 took a title screen from 60fps to 45. The box
+// is returned only when it saves at least a quarter of the quad.
+func spriteTrim(px []byte, w, h, bpp, n int32) [4]float32 {
+	if w <= 0 || h <= 0 || n <= 0 || n > bpp || int64(len(px)) != int64(w)*int64(h)*int64(bpp) {
 		return [4]float32{}
 	}
-	blank := func(y int32) bool {
-		for _, c := range px[y*w : (y+1)*w] {
+	stride := w * bpp
+	filled := func(row []byte, x int32) bool {
+		for _, c := range row[x*bpp : x*bpp+n] {
 			if c != 0 {
+				return true
+			}
+		}
+		return false
+	}
+	blank := func(y int32) bool {
+		row := px[y*stride : (y+1)*stride]
+		for x := int32(0); x < w; x++ {
+			if filled(row, x) {
 				return false
 			}
 		}
@@ -844,22 +866,22 @@ func spriteTrim(px []byte, w, h int32) [4]float32 {
 		y0++
 	}
 	if y0 > y1 {
-		return [4]float32{} // all colour 0: rare, not worth a special case
+		return [4]float32{} // all empty: rare, not worth a special case
 	}
 	for blank(y1) {
 		y1--
 	}
 	x0, x1 := w, int32(-1)
 	for y := y0; y <= y1; y++ {
-		row := px[y*w : (y+1)*w]
+		row := px[y*stride : (y+1)*stride]
 		for x := int32(0); x < x0; x++ {
-			if row[x] != 0 {
+			if filled(row, x) {
 				x0 = x
 				break
 			}
 		}
 		for x := w - 1; x > x1; x-- {
-			if row[x] != 0 {
+			if filled(row, x) {
 				x1 = x
 				break
 			}

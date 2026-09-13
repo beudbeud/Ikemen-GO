@@ -997,18 +997,24 @@ func (a *Animation) Draw(window *[4]int32, x, y, xcs, ycs, xs, xbs, ys,
 	blendMode, blendAlpha := a.alphaToBlend()
 
 	var paltex Texture
-	var trim [4]float32
+	var trim, trimBlack [4]float32
 	if !a.isVideo {
 		var pal []uint32
 		pal, paltex = a.pal(pfx)
 		if a.spr.coldepth <= 8 && paltex == nil {
 			paltex = a.spr.CachePalTex(pal)
 		}
-		// Outside the trim box there is only colour 0. Masked, and with a
-		// transparent colour 0, those texels leave the frame untouched in every
-		// blend mode; a custom shader may use them anyway.
-		if paltex != nil && a.mask != -1 && shader.name == "" && len(pal) > 0 && pal[0]>>24 == 0 {
-			trim = a.spr.trim
+		// Outside the trim box every texel is zero: colour 0 when indexed,
+		// transparent black when RGBA. Unless a mask of -1 makes them opaque,
+		// those fragments come out as zero alpha (and, for RGBA, zero colour)
+		// and leave the frame untouched in every blend mode; a custom shader
+		// may use them anyway.
+		if a.mask != -1 && shader.name == "" &&
+			(paltex == nil || len(pal) > 0 && pal[0]>>24 == 0) {
+			trim = a.spr.trim[0]
+		}
+		if paltex == nil && shader.name == "" {
+			trimBlack = a.spr.trim[1]
 		}
 	}
 
@@ -1041,6 +1047,7 @@ func (a *Animation) Draw(window *[4]int32, x, y, xcs, ycs, xs, xbs, ys,
 		yOffset:        yoff * sys.heightScale,
 		customShader:   shader,
 		trim:           trim,
+		trimBlack:      trimBlack,
 	}
 
 	RenderSprite(rp)

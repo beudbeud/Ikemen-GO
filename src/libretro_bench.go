@@ -13,6 +13,9 @@ package main
 //	                          quit after the last one.
 //	IKEMEN_BENCH_PPROF=<file> with IKEMEN_BENCH: CPU profile of the window
 //	                          only -- a whole-run profile is mostly loading.
+//	IKEMEN_BENCH_FILL=1       with IKEMEN_BENCH: also log the textures that
+//	                          cover the most screen per frame over the window,
+//	                          before and after the trim scissor.
 //	IKEMEN_SEED=<n>           seed both random sources before the engine
 //	                          starts, so an AI fight plays out the same way on
 //	                          every run.
@@ -43,6 +46,11 @@ import (
 	"time"
 )
 
+type libretroFillStat struct {
+	draws       uint64
+	area, drawn float64
+}
+
 type libretroDrawCounter interface{ DrawCalls() uint64 }
 
 type libretroPresentedReader interface {
@@ -60,6 +68,8 @@ var lrBench struct {
 	lastDraws uint64
 
 	pprof *os.File
+
+	fill map[Texture]*libretroFillStat
 
 	dumpDir    string
 	dumpFrames map[uint64]bool
@@ -87,6 +97,11 @@ func libretroBenchInit() {
 			lrBench.on, lrBench.from, lrBench.to = true, from, to
 			lrBench.steps = make([]time.Duration, 0, to-from)
 			lrBench.draws = make([]uint64, 0, to-from)
+			if os.Getenv("IKEMEN_BENCH_FILL") != "" {
+				lrBench.fill = map[Texture]*libretroFillStat{}
+				libretroFillSprites = map[Texture]*Sprite{}
+				libretroFill = libretroFillAdd
+			}
 		}
 	}
 	if dir := os.Getenv("IKEMEN_DUMP"); dir != "" {
@@ -147,7 +162,11 @@ func libretroBenchFrame(w, h int, step time.Duration) {
 				pprof.StopCPUProfile()
 				lrBench.pprof.Close()
 			}
-			fmt.Fprintln(os.Stderr, libretroBenchSummary(lrBench.steps, lrBench.draws, time.Since(lrBench.start)))
+			elapsed := time.Since(lrBench.start)
+			if lrBench.fill != nil {
+				libretroFillReport(uint64(len(lrBench.steps)))
+			}
+			fmt.Fprintln(os.Stderr, libretroBenchSummary(lrBench.steps, lrBench.draws, elapsed))
 			libretroOnExit()
 		}
 	}
@@ -157,6 +176,55 @@ func libretroBenchFrame(w, h int, step time.Duration) {
 		if n == lrBench.dumpLast {
 			libretroOnExit()
 		}
+	}
+}
+
+// libretroFillAdd accounts one quad of the frame being drawn, when that frame
+// is in the bench window. Game thread.
+func libretroFillAdd(tex Texture, area, drawn float32) {
+	if n := lrBench.frame + 1; n < lrBench.from || n >= lrBench.to {
+		return
+	}
+	st := lrBench.fill[tex]
+	if st == nil {
+		st = &libretroFillStat{}
+		lrBench.fill[tex] = st
+	}
+	st.draws++
+	st.area += float64(area)
+	st.drawn += float64(drawn)
+}
+
+// libretroFillReport logs screen coverage per frame: the total, then the 20
+// textures that drew the most, named by their sprite where one is known.
+func libretroFillReport(frames uint64) {
+	if frames == 0 {
+		return
+	}
+	type row struct {
+		tex Texture
+		st  *libretroFillStat
+	}
+	var rows []row
+	var area, drawn float64
+	for tex, st := range lrBench.fill {
+		rows = append(rows, row{tex, st})
+		area += st.area
+		drawn += st.drawn
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].st.drawn > rows[j].st.drawn })
+	f := float64(frames)
+	fmt.Fprintf(os.Stderr, "Ikemen GO: fill total area_mpx=%.2f drawn_mpx=%.2f textures=%d\n", area/f/1e6, drawn/f/1e6, len(rows))
+	for i, r := range rows {
+		if i == 20 {
+			break
+		}
+		name := "?"
+		if s := libretroFillSprites[r.tex]; s != nil {
+			name = fmt.Sprintf("%d,%d %dx%d %dbpp", s.Group, s.Number, s.Size[0], s.Size[1], s.coldepth)
+		}
+		fmt.Fprintf(os.Stderr, "Ikemen GO: fill %-24s draws=%.1f area_mpx=%.3f drawn_mpx=%.3f\n",
+			name, float64(r.st.draws)/f, r.st.area/f/1e6, r.st.drawn/f/1e6)
 	}
 }
 

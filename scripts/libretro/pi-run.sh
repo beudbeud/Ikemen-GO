@@ -12,6 +12,7 @@
 #     -s <n>       IKEMEN_SEED (default 1): same AI fight on every run; 0 = unseeded
 #     -V           turn vsync off, so fps measures throughput instead of 60
 #     -P           with -b: CPU profile of the bench window -> <outdir>/window.pprof
+#     -F           with -b: log the textures that fill the most screen (IKEMEN_BENCH_FILL)
 #
 # The core asks the frontend to shut down at the end of the bench window or
 # after the last dump, but RetroArch may only close the content and sit in its
@@ -23,13 +24,13 @@
 set -u
 
 core= out= game="/recalbox/share/externals/usb0/recalbox/roms/mugen/Ultimate Cosmos"
-res="1920x1080 (16:9)" args= bench= dump= timeout=300 novsync= seed=1 wpprof=
-while getopts c:o:g:r:a:b:d:t:s:VP opt; do
+res="1920x1080 (16:9)" args= bench= dump= timeout=300 novsync= seed=1 wpprof= fill=
+while getopts c:o:g:r:a:b:d:t:s:VPF opt; do
 	case $opt in
 	c) core=$OPTARG ;; o) out=$OPTARG ;; g) game=$OPTARG ;; r) res=$OPTARG ;;
 	a) args=$OPTARG ;; b) bench=$OPTARG ;; d) dump=$OPTARG ;; t) timeout=$OPTARG ;;
 	s) seed=$OPTARG ;;
-	V) novsync=1 ;; P) wpprof=1 ;;
+	V) novsync=1 ;; P) wpprof=1 ;; F) fill=1 ;;
 	*) echo "usage: see header" >&2; exit 2 ;;
 	esac
 done
@@ -80,7 +81,7 @@ set -- $(thermal); temp0=$1 thr0=$2
 
 start=$(date +%s)
 IKEMEN_SEED="$seed" IKEMEN_ARGS="$args" IKEMEN_BENCH="$bench" \
-	IKEMEN_BENCH_PPROF="${wpprof:+$out/window.pprof}" \
+	IKEMEN_BENCH_PPROF="${wpprof:+$out/window.pprof}" IKEMEN_BENCH_FILL="$fill" \
 	IKEMEN_DUMP="${dump:+$out}" IKEMEN_DUMP_FRAMES="$dump" \
 	retroarch --config "$cfgdir/retroarchcustom.cfg" --appendconfig "$out/ra.cfg" \
 	-L "$core" "$game" >"$out/log.txt" 2>&1 &

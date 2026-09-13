@@ -52,6 +52,14 @@ var (
 	// no save directory -- keeps every config write blocked, since the only
 	// other target is the pack's own config.ini.
 	libretroConfigPath string
+	// libretroFill, when set, is told the screen area of every quad drawn
+	// and how much of it the trim scissor leaves, in pixels. Bench
+	// instrumentation (IKEMEN_BENCH_FILL): it is how a GPU-bound screen is
+	// traced back to the layers that fill it.
+	libretroFill func(tex Texture, area, drawn float32)
+	// libretroFillSprites names textures for that report, filled at upload
+	// while libretroFill is set.
+	libretroFillSprites map[Texture]*Sprite
 )
 
 // libretroSpriteShrink divides sprite texture resolution at upload (0 or 1 =
