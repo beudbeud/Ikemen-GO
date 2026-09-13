@@ -19,14 +19,28 @@
 
 	uniform mat4 modelview, projection;
 
-	COMPAT_ATTRIBUTE vec2 position;
-	COMPAT_ATTRIBUTE vec2 uv;
+	#ifdef IK_QUAD_UNIFORM
+		// The quad's four vertices -- x, y, u, v, in strip order -- come as
+		// a uniform instead of a vertex buffer. On v3d every buffer upload
+		// reallocates a buffer object: ~50us a draw, which was two thirds of
+		// the game thread in a busy fight on a Pi 5.
+		uniform vec4 quad[4];
+	#else
+		COMPAT_ATTRIBUTE vec2 position;
+		COMPAT_ATTRIBUTE vec2 uv;
+	#endif
 	COMPAT_VARYING vec2 texcoord;
 #endif
 
 void main(void) {
+#ifdef IK_QUAD_UNIFORM
+	vec4 q = quad[gl_VertexID];
+	texcoord = q.zw;
+	gl_Position = projection * (modelview * vec4(q.xy, 0.0, 1.0));
+#else
 	texcoord = uv;
 	gl_Position = projection * (modelview * vec4(position, 0.0, 1.0));
+#endif
 	
 	#if __VERSION__ >= 450
 		// Vulkan's Y-axis is inverted compared to OpenGL
