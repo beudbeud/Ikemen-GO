@@ -469,14 +469,26 @@ func TestSpriteTrim(t *testing.T) {
 	px := make([]byte, 10*10)
 	px[3*10+4], px[5*10+6] = 7, 1 // figure spans x 4..6, y 3..5
 	// Padded by a texel: x 3..7, y 2..6.
-	if got, want := spriteTrim(px, 10, 10), [4]float32{0.3, 0.2, 0.8, 0.7}; got != want {
+	if got, want := spriteTrim(px, 10, 10, 1, 1), [4]float32{0.3, 0.2, 0.8, 0.7}; got != want {
 		t.Errorf("trim = %v, want %v", got, want)
 	}
-	if got := spriteTrim(make([]byte, 100), 10, 10); got != [4]float32{} {
+	if got := spriteTrim(make([]byte, 100), 10, 10, 1, 1); got != [4]float32{} {
 		t.Errorf("blank sprite: trim = %v, want none", got)
 	}
 	px[0], px[99] = 1, 1 // figure now fills the canvas: nothing to save
-	if got := spriteTrim(px, 10, 10); got != [4]float32{} {
+	if got := spriteTrim(px, 10, 10, 1, 1); got != [4]float32{} {
 		t.Errorf("full sprite: trim = %v, want none", got)
+	}
+	// RGBA: only an all-zero texel is empty -- invisible colour still counts.
+	rgba := make([]byte, 10*10*4)
+	rgba[(3*10+4)*4+3] = 255 // opaque black at (4,3)
+	rgba[(5*10+6)*4+0] = 9   // zero alpha, non-zero red at (6,5)
+	if got, want := spriteTrim(rgba, 10, 10, 4, 4), [4]float32{0.3, 0.2, 0.8, 0.7}; got != want {
+		t.Errorf("rgba trim = %v, want %v", got, want)
+	}
+	// Black box ignores alpha: only the red texel at (6,5) counts, padded to
+	// x 5..7, y 4..6 -- a 3x3 box, well under three quarters of the canvas.
+	if got, want := spriteTrim(rgba, 10, 10, 4, 3), [4]float32{0.5, 0.4, 0.8, 0.7}; got != want {
+		t.Errorf("black trim = %v, want %v", got, want)
 	}
 }
