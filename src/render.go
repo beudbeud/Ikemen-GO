@@ -1056,6 +1056,20 @@ func FillRect(rect [4]int32, color uint32, alpha [2]int32, fx *PalFX) {
 	// This call is safe even if fx is nil. Defaults to just AllPalFX
 	spfx = fx.getFinalPalFx(TT_add, alpha)
 
+	// An opaque fill with neutral PalFX writes exactly (r, g, b, 1) over
+	// every pixel of the rectangle, which a renderer can do with a clear. The
+	// frame starts with one of these over the whole screen, and as a shaded,
+	// blended quad it cost ~1.8ms at 1920x1080 on a Pi 5; a clear at the start
+	// of a frame costs next to nothing on a tile-based GPU.
+	if c, ok := gfx.(interface {
+		ClearRect(rect [4]int32, r, g, b float32)
+	}); ok &&
+		alpha[0] >= 255 && alpha[1] <= 0 && !spfx.neg && spfx.gray == 0 && spfx.hue == 0 &&
+		spfx.add == [3]float32{0, 0, 0} && spfx.mult == [3]float32{1, 1, 1} {
+		c.ClearRect(rect, r, g, b)
+		return
+	}
+
 	modelview := mgl.Translate3D(0, float32(sys.scrrect[3]), 0)
 	proj := gfx.OrthographicProjectionMatrix(0, float32(sys.scrrect[2]), 0, float32(sys.scrrect[3]), -65535, 65535)
 

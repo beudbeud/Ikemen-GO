@@ -1956,6 +1956,20 @@ func (r *Renderer_GLES32) EnableScissor(x, y, width, height int32) {
 	r.scissorRect = [4]int32{x, realY, width, height}
 }
 
+// ClearRect fills a screen rectangle (x, y, w, h, top-left origin) with an
+// opaque colour through a scissored clear -- what FillRect's shaded quad
+// produces for an opaque fill with neutral PalFX, byte for byte.
+func (r *Renderer_GLES32) ClearRect(rect [4]int32, red, green, blue float32) {
+	if rect[2] <= 0 || rect[3] <= 0 {
+		return
+	}
+	r.EnableScissor(rect[0], rect[1], rect[2], rect[3])
+	gl.ClearColor(red, green, blue, 1)
+	gl.Clear(gl.COLOR_BUFFER_BIT)
+	gl.ClearColor(0, 0, 0, 0)
+	r.DisableScissor()
+}
+
 func (r *Renderer_GLES32) DisableScissor() {
 	if r.scissorEnabled {
 		gl.Disable(gl.SCISSOR_TEST)
