@@ -13,6 +13,7 @@
 #     -V           turn vsync off, so fps measures throughput instead of 60
 #     -P           with -b: CPU profile of the bench window -> <outdir>/window.pprof
 #     -F           with -b: log the textures that fill the most screen (IKEMEN_BENCH_FILL)
+#     -O <k>=<v>   set another core option, e.g. -O ikemen_go_sprite_detail=Half
 #
 # The core asks the frontend to shut down at the end of the bench window or
 # after the last dump, but RetroArch may only close the content and sit in its
@@ -24,13 +25,15 @@
 set -u
 
 core= out= game="/recalbox/share/externals/usb0/recalbox/roms/mugen/Ultimate Cosmos"
-res="1920x1080 (16:9)" args= bench= dump= timeout=300 novsync= seed=1 wpprof= fill=
-while getopts c:o:g:r:a:b:d:t:s:VPF opt; do
+res="1920x1080 (16:9)" args= bench= dump= timeout=300 novsync= seed=1 wpprof= fill= coreopts=
+while getopts c:o:g:r:a:b:d:t:s:VPFO: opt; do
 	case $opt in
 	c) core=$OPTARG ;; o) out=$OPTARG ;; g) game=$OPTARG ;; r) res=$OPTARG ;;
 	a) args=$OPTARG ;; b) bench=$OPTARG ;; d) dump=$OPTARG ;; t) timeout=$OPTARG ;;
 	s) seed=$OPTARG ;;
 	V) novsync=1 ;; P) wpprof=1 ;; F) fill=1 ;;
+	O) coreopts="$coreopts$OPTARG
+" ;;
 	*) echo "usage: see header" >&2; exit 2 ;;
 	esac
 done
@@ -58,6 +61,11 @@ rm -f "$out"/log.txt "$out"/summary.env "$out"/frame_*.ppm
 cfgdir=/recalbox/share/system/configs/retroarch
 cp "$cfgdir/cores/retroarch-core-options.cfg" "$out/opts.cfg"
 sed -i "s|^ikemen_go_resolution = .*|ikemen_go_resolution = \"$res\"|" "$out/opts.cfg"
+printf '%s' "$coreopts" | while IFS='=' read -r k v; do
+	[ -n "$k" ] || continue
+	sed -i "/^$k = /d" "$out/opts.cfg"
+	echo "$k = \"$v\"" >>"$out/opts.cfg"
+done
 {
 	echo "core_options_path = \"$out/opts.cfg\""
 	# Recalbox rewrites the shared config's system_directory for every game it
