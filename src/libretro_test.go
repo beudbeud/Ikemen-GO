@@ -319,6 +319,40 @@ func TestSffCacheRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLibretroSffCacheEvict(t *testing.T) {
+	dir := t.TempDir()
+	mk := func(name string, size int, age time.Duration) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, make([]byte, size), 0644); err != nil {
+			t.Fatal(err)
+		}
+		when := time.Now().Add(-age)
+		os.Chtimes(p, when, when)
+		return p
+	}
+	oldest := mk("a.sfc", 40, 3*time.Hour)
+	older := mk("b.sfc", 40, 2*time.Hour)
+	recent := mk("c.sfc", 40, time.Hour)
+	fresh := mk("d.sfc", 40, 0)
+	other := mk("notes.txt", 1000, 5*time.Hour) // not an entry: never counted or removed
+
+	sffCacheEvict(dir, 100, fresh)
+	for p, want := range map[string]bool{oldest: false, older: false, recent: true, fresh: true, other: true} {
+		if _, err := os.Stat(p); (err == nil) != want {
+			t.Errorf("%s: exists=%v, want %v", filepath.Base(p), err == nil, want)
+		}
+	}
+
+	// The entry just written survives even when it alone is over the cap.
+	sffCacheEvict(dir, 10, fresh)
+	if _, err := os.Stat(fresh); err != nil {
+		t.Error("kept entry was evicted")
+	}
+	if _, err := os.Stat(recent); err == nil {
+		t.Error("older entry should go when over the cap")
+	}
+}
+
 func TestLibretroFindMotif(t *testing.T) {
 	chdir := func(dir string) {
 		t.Helper()

@@ -9,7 +9,14 @@ package main
 // Layout: $HOME/.cache/ikemen-go/<sha1(key)>.sfc, key = absolute source path
 // + load flags + shrink settings. The file embeds the source's size and mtime;
 // any mismatch regenerates it. ponytail: no compression -- a USB3 read beats
-// the Pi's inflate several times over; add lz4 if cache size ever hurts.
+// the Pi's inflate several times over; add lz4 if the size cap below starts
+// evicting what a session needs.
+//
+// Entries are raw texels, hundreds of MB for an HD character, and the key
+// multiplies them (every resolution, every path to the same game), so the
+// directory is capped at sffCacheMaxBytes: each store evicts the least
+// recently used entries, and a hit refreshes its entry's mtime. Temp files a
+// killed core left behind are removed the first time the cache is used.
 
 import (
 	"bufio"
@@ -20,11 +27,17 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
 
 const sffCacheMagic = "IKSFC001"
+
+// sffCacheMaxBytes caps the cache directory. It lives in the frontend's share
+// (an SD card on Recalbox), where 16.8GB of entries were found uncapped.
+// ponytail: fixed cap; make it a core option if a pack needs more cached.
+const sffCacheMaxBytes = 2 << 30
 
 type sffCaptureEntry struct {
 	off         int64 // position of the pixel blob in the spill file
@@ -41,6 +54,8 @@ var (
 	sffSpillFile   *os.File
 	sffSpillWriter *bufio.Writer
 	sffSpillOff    int64
+	// sffCacheSwept is set once the leftovers of earlier processes are gone.
+	sffCacheSwept sync.Once
 )
 
 // sffCaptureAdd is called from SetPxl/SetRaw with the exact post-shrink bytes
@@ -79,6 +94,18 @@ func sffCacheBegin() bool {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return false
 	}
+	// Only one core runs at a time, and nothing of this one is on disk yet:
+	// any spill or half-written entry here was left by a core killed mid-load.
+	sffCacheSwept.Do(func() {
+		for _, pat := range []string{"spill*", "sfc*"} {
+			tmps, _ := filepath.Glob(filepath.Join(dir, pat))
+			for _, t := range tmps {
+				if filepath.Ext(t) != ".sfc" {
+					os.Remove(t)
+				}
+			}
+		}
+	})
 	f, err := os.CreateTemp(dir, "spill*")
 	if err != nil {
 		return false
@@ -259,7 +286,38 @@ func sffCacheStore(filename string, char, isActPal bool, s *Sff,
 	if err := tmp.Close(); err != nil || w.err != nil {
 		return
 	}
-	os.Rename(tmp.Name(), path)
+	if os.Rename(tmp.Name(), path) == nil {
+		sffCacheEvict(filepath.Dir(path), sffCacheMaxBytes, path)
+	}
+}
+
+// sffCacheEvict removes the least recently used entries of dir until the
+// entries total at most max bytes. keep, the entry just written, stays even
+// when it alone is over the cap: it is what the next launch will read.
+func sffCacheEvict(dir string, max int64, keep string) {
+	paths, _ := filepath.Glob(filepath.Join(dir, "*.sfc"))
+	type entry struct {
+		path  string
+		size  int64
+		mtime time.Time
+	}
+	var entries []entry
+	var total int64
+	for _, p := range paths {
+		if st, err := os.Stat(p); err == nil {
+			entries = append(entries, entry{p, st.Size(), st.ModTime()})
+			total += st.Size()
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].mtime.Before(entries[j].mtime) })
+	for _, e := range entries {
+		if total <= max {
+			break
+		}
+		if e.path != keep && os.Remove(e.path) == nil {
+			total -= e.size
+		}
+	}
 }
 
 // --- load -----------------------------------------------------------------
@@ -468,6 +526,8 @@ func sffCacheLoad(filename string, char, isActPal bool) *Sff {
 	if r.err {
 		return drop()
 	}
+	now := time.Now()
+	os.Chtimes(path, now, now) // eviction order is last use, not creation
 	fmt.Fprintf(os.Stderr, "Ikemen GO: sff %s: %d sprites from cache in %dms\n",
 		filename, ns, time.Since(start).Milliseconds())
 	return s
