@@ -1,3 +1,5 @@
+//go:build !gles
+
 package main
 
 import (
@@ -816,4 +818,14 @@ func (r *Renderer_VK) evictColdestTextures(budgetBytes vk.DeviceSize) {
 			LogMessage("[VRAM] evicted %dx%d texture, freed ~%d bytes (total evicted: %d)", t.width, t.height, estimatedSize, freedBytes)
 		}
 	}
+}
+
+// Android Activity background/resume, called from pollEvents
+func (r *Renderer_VK) enterBackground() {
+	r.Await()
+}
+
+func (r *Renderer_VK) enterForeground() {
+	r.RecreateSurfaceAndSwapchain()
+	r.surfaceLost = false
 }

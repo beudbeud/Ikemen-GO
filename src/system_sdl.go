@@ -43,7 +43,7 @@ func (s *System) newWindow(w, h int) (*Window, error) {
 		if s.cfg.Video.WindowWidth > 0 || s.cfg.Video.WindowHeight > 0 {
 			w, h = s.cfg.Video.WindowWidth, s.cfg.Video.WindowHeight
 		}
-		return &Window{nil, s.cfg.Config.WindowTitle, 0, 0, w, h, false, false}, nil
+		return &Window{title: s.cfg.Config.WindowTitle, w: w, h: h, focused: true}, nil
 	}
 
 	if runtime.GOOS == "android" {
@@ -468,14 +468,14 @@ func (w *Window) pollEvents() {
 			switch t.Type {
 			case sdl.APP_WILLENTERBACKGROUND:
 			case sdl.APP_DIDENTERBACKGROUND:
-				if rvk, ok := gfx.(*Renderer_VK); ok {
-					rvk.Await()
+				// Interface, not *Renderer_VK: the gles build has no Vulkan
+				if rvk, ok := gfx.(interface{ enterBackground() }); ok {
+					rvk.enterBackground()
 					w.renderingPaused = true
 				}
 			case sdl.APP_DIDENTERFOREGROUND:
-				if rvk, ok := gfx.(*Renderer_VK); ok {
-					rvk.RecreateSurfaceAndSwapchain()
-					rvk.surfaceLost = false
+				if rvk, ok := gfx.(interface{ enterForeground() }); ok {
+					rvk.enterForeground()
 				}
 			}
 		case sdl.ControllerAxisEvent:
