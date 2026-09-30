@@ -37,7 +37,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/gopxl/beep/v2"
+	"github.com/ikemen-engine/beep/v2"
 	"github.com/veandco/go-sdl2/sdl"
 )
 
