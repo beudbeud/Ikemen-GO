@@ -153,7 +153,8 @@ func libretroHWExport(w, h int) bool {
 		for i := range hw.frames {
 			f := &hw.frames[i]
 			gl.GenTextures(1, &f.tex)
-			gl.BindTexture(gl.TEXTURE_2D, f.tex)
+			// Through the renderer: its texture cache must know this unit changed.
+			r.bindTextureToUnitForced(0, gl.TEXTURE_2D, nil, f.tex)
 			gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, int32(w), int32(h), 0, gl.RGBA, gl.UNSIGNED_BYTE, nil)
 			gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
 			gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
