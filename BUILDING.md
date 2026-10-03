@@ -314,9 +314,9 @@ looks for cores, e.g. `~/.config/retroarch/cores` and
 `~/.config/retroarch/cores/../info`.
 
 Run it by loading the **folder of a normal Ikemen GO installation** as content
-(or any file inside it — `data/system.def` works). The engine keeps using that
-folder for `save/config.ini`, replays and screenshots, so a standalone install
-and the core share one configuration.
+(or any file inside it — `data/system.def` works). Configuration and stats are
+kept in the frontend's save directory under `ikemen/<pack>` (seeded from the
+folder's `save/` on the first run); replays and screenshots stay in the folder.
 
 Players 1-4 are RetroPad ports 1-4 with the engine's default joystick bindings;
 the keyboard is forwarded too, so the in-game input configuration screens work.
@@ -354,8 +354,8 @@ The **Engine files** core option decides where those come from:
 
 | Value | Behaviour |
 | --- | --- |
-| `Content folder` (default) | The folder answers for everything, as a standalone install would. |
-| `System directory` | The engine's scripts, common states and effects come from `<system>/ikemen/`; the folder only supplies its motif, chars, stages and sound. |
+| `System directory` (default) | The engine's scripts, common states and effects come from `<system>/ikemen/`; the folder only supplies its motif, chars, stages and sound. Without that tree installed it falls back to the content folder. |
+| `Content folder` | The folder answers for everything, as a standalone install would. |
 
 For the second, copy this repository's `data`, `external` and `font` into the
 frontend's system directory under `ikemen/` (`~/.local/share/retroarch/bios/ikemen`
