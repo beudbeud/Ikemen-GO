@@ -519,6 +519,7 @@ func libretroStopProfile() {
 		return
 	}
 	pprof.StopCPUProfile()
+	libretroWriteHeapProfile("heap-exit.pprof")
 	lr.prof.Close()
 	lr.prof = nil
 	fmt.Fprintln(os.Stderr, "Ikemen GO: CPU profile written")
@@ -794,6 +795,23 @@ func libretroLogMemory() {
 	}
 	fmt.Fprintf(os.Stderr, "Ikemen GO: memory after load: Go heap %dMiB (runtime holds %dMiB), process RSS %s\n",
 		ms.HeapAlloc>>20, ms.HeapSys>>20, rss)
+	libretroWriteHeapProfile("heap-load.pprof")
+}
+
+// libretroWriteHeapProfile drops a heap profile next to cpu.pprof when
+// IKEMEN_PROFILE is set: who holds the Go heap after a load and in a match.
+func libretroWriteHeapProfile(name string) {
+	dir := os.Getenv("IKEMEN_PROFILE")
+	if dir == "" {
+		return
+	}
+	f, err := os.Create(filepath.Join(dir, name))
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	runtime.GC()
+	pprof.WriteHeapProfile(f)
 }
 
 // libretroSpriteDetail honours the "Sprite detail" core option. "Auto" judges
@@ -959,6 +977,10 @@ func libretroRAMSaver() {
 		cfg.Config.ProjectileMax = Min(cfg.Config.ProjectileMax, 64)
 		cfg.Video.EnableModelShadow = false
 		cfg.Sound.WavChannels = Min(cfg.Sound.WavChannels, 16)
+		// A looped BGM is otherwise decoded whole into RAM in the background:
+		// 75MiB of PCM for a 3-minute mp3, grown by appends so the heap peaks
+		// at twice that. Streaming costs at most a hiccup at the loop point.
+		cfg.Sound.BGMRAMBuffer = false
 	})
 }
 
