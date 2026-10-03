@@ -962,8 +962,12 @@ func libretroSpriteDetail() {
 				libretroSpriteShrink = Max(libretroSpriteShrink, 2)
 			}
 			// Some packs declare a small GameWidth/Height while shipping HD
-			// character rips; the per-sprite check catches those too.
-			libretroShrinkGameH = cfg.Video.GameHeight
+			// character rips; the per-sprite check catches those too. Not on
+			// an HD pack: its tall sprites (stage and storyboard backgrounds
+			// taller than the frame) are authored density, not rips.
+			if assetsH < 720 {
+				libretroShrinkGameH = cfg.Video.GameHeight
+			}
 		}
 		fmt.Fprintf(os.Stderr, "Ikemen GO: sprite detail %q -> texture divisor %d (assets %dp, game %dp)\n",
 			choice, libretroSpriteShrink, assetsH, cfg.Video.GameHeight)
