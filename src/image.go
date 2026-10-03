@@ -704,6 +704,9 @@ type lazyTex struct {
 	tex    Texture
 	trim   [2][4]float32
 	warm   atomic.Bool // texels read in once off the GL thread (lazyEnqueue)
+	// warmTrim is computed by the warming goroutine, valid once warm is set:
+	// scanning the texels costs as much as uploading them.
+	warmTrim [2][4]float32
 }
 
 // texture returns the sprite's texture, making it first if it was left lazy.
@@ -739,7 +742,12 @@ func (l *lazyTex) make() bool {
 		return false
 	}
 	tex.SetData(l.data)
-	l.tex, l.trim = tex, spriteTrims(l.data, l.w, l.h, l.depth)
+	l.tex = tex
+	if l.warm.Load() {
+		l.trim = l.warmTrim
+	} else {
+		l.trim = spriteTrims(l.data, l.w, l.h, l.depth)
+	}
 	lazyQueue.Lock()          // a warming goroutine may be reading them
 	l.data, l.keep = nil, nil // the mapping can go once all are made
 	lazyQueue.Unlock()
@@ -782,6 +790,7 @@ func lazyEnqueue(sprites []*Sprite) {
 			for i := 0; i < len(data); i += 4096 {
 				sum += data[i]
 			}
+			l.warmTrim = spriteTrims(data, l.w, l.h, l.depth)
 			runtime.KeepAlive(keep)
 			lazyWarmSink.Add(uint32(sum))
 			l.warm.Store(true)
