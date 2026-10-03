@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 
@@ -383,7 +384,9 @@ func (bgm *Bgm) Open(filename string, loop, bgmVolume, bgmLoopStart, bgmLoopEnd,
 	// Decoders seek and read in small steps (go-mp3 walks every frame header
 	// at open): from a mapping that is memory work, from a USB stick it was
 	// 300ms of frozen screen at each menu change, 7s when the cache was cold.
-	if osf, ok := f.(*os.File); ok {
+	// Not tracker modules: libxmp loads from the file itself (xmpDecode).
+	isXmp := HasExtension(bgm.filename, ".xm") || HasExtension(bgm.filename, ".mod") || HasExtension(bgm.filename, ".it") || HasExtension(bgm.filename, ".s3m")
+	if osf, ok := f.(*os.File); ok && !isXmp {
 		if m := mmapFile(osf); m != nil {
 			willNeed(m.data)
 			osf.Close()
@@ -410,7 +413,7 @@ func (bgm *Bgm) Open(filename string, loop, bgmVolume, bgmLoopStart, bgmLoopEnd,
 			bgm.streamer, format, err = midi.Decode(f, sf, beep.SampleRate(int(sys.cfg.Sound.SampleRate)))
 			bgm.format = "midi"
 		}
-	} else if HasExtension(bgm.filename, ".xm") || HasExtension(bgm.filename, ".mod") || HasExtension(bgm.filename, ".it") || HasExtension(bgm.filename, ".s3m") {
+	} else if isXmp {
 		bgm.streamer, format, err = xmpDecode(f)
 		bgm.format = "xmp"
 	} else {
@@ -725,17 +728,10 @@ type Sound struct {
 }
 
 // fileMapping owns a memory-mapped file (see mmapFile); it is unmapped by a
-// finalizer once nothing slicing it (Sound, playing streamer, pending sprite
+// finalizer once nothing slicing it (Sound, BGM decoder, pending sprite
 // texels) references it.
 type fileMapping struct {
 	data []byte
-}
-
-// sndReader keeps the mapping alive for as long as a streamer reads from it:
-// a sound may still be playing after its Snd was dropped.
-type sndReader struct {
-	*bytes.Reader
-	mapping *fileMapping
 }
 
 // mappedFile reads a whole mapped file; closing it is the GC's job.
@@ -747,9 +743,9 @@ type mappedFile struct {
 func (mappedFile) Close() error { return nil }
 
 // safeStreamer plays a wave that was not decoded through at load (a mapped
-// one: checking it reads the whole bank off the disk, 180MiB for Ultimate
-// Cosmos, which a 2GiB board cannot keep cached). A decoder panic or error
-// ends that sound instead of taking the mixer down.
+// one: checking it there reads the whole bank on the loading thread, 180MiB
+// for Ultimate Cosmos). A decoder panic or error ends that sound instead of
+// taking the mixer down.
 type safeStreamer struct {
 	beep.StreamSeeker
 	dead bool
@@ -769,6 +765,15 @@ func (s *safeStreamer) Stream(samples [][2]float64) (n int, ok bool) {
 		s.dead = true
 	}
 	return n, ok
+}
+
+// Position of a dead streamer is its end: SoundChannels.Tick frees a channel
+// on that, and the decoder's own position stopped at the fault.
+func (s *safeStreamer) Position() int {
+	if s.dead {
+		return s.Len()
+	}
+	return s.StreamSeeker.Position()
 }
 
 func (s *safeStreamer) Seek(p int) (err error) {
@@ -848,7 +853,7 @@ func wavPlaysThrough(wavData []byte) bool {
 }
 
 func (s *Sound) GetStreamer() beep.StreamSeeker {
-	streamer, _, _ := wav.Decode(sndReader{bytes.NewReader(s.wavData), s.mapping})
+	streamer, _, _ := wav.Decode(bytes.NewReader(s.wavData))
 	if streamer == nil {
 		return nil
 	}
@@ -910,7 +915,7 @@ func LoadSndFiltered(filename string, keepItem func([2]int32) bool, max uint32) 
 	// Like the sff log: which sound banks cost load time is otherwise invisible.
 	start := time.Now()
 	defer func() {
-		if d := time.Since(start); d > 100*time.Millisecond {
+		if d := time.Since(start); libretroPresent != nil && d > 100*time.Millisecond {
 			fmt.Fprintf(os.Stderr, "Ikemen GO: snd %s: %d sounds in %dms\n", filename, len(s.table), d.Milliseconds())
 		}
 	}()
@@ -992,13 +997,13 @@ func LoadSndFiltered(filename string, keepItem func([2]int32) bool, max uint32) 
 		subHeaderOffset = nextSubHeaderOffset
 	}
 	if m != nil {
-		// Read the bank in off the GL thread: mixing runs on the frontend's
-		// thread under the speaker lock, and a wave first played from a cold
-		// USB stick faulted there for ~60ms -- stalling retro_run, and Play
-		// waiting on that lock.
+		// Read the bank in off the GL thread: a wave's first Play copies it
+		// to the heap, and from a cold USB stick that copy faulted on the
+		// game thread.
 		go func() {
 			lowPriority()
 			populate(m.data)
+			runtime.KeepAlive(m) // no unmap under the madvise
 		}()
 	}
 	return s, nil

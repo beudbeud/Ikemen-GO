@@ -508,6 +508,8 @@ func (m Music) act() {
 	}
 }
 
+var bgmLine = regexp.MustCompile(`(?im)^[ \t]*bgm[ \t]*=[ \t]*([^;\r\n]*?)[ \t]*(?:;|\r?$)`)
+
 // motifWarmMusic reads the music of the motif's screens and of its storyboards
 // (logo, intro...) into the page cache in the background. Opening a BGM walks
 // the whole file (go-mp3 indexes every frame), which off a USB stick froze
@@ -518,7 +520,6 @@ func motifWarmMusic(m *Motif) {
 	// Storyboards first, in field order (logo, intro): they play right after
 	// the boot, while the USB stick is still busy with background preloads.
 	var files []string
-	bgmLine := regexp.MustCompile(`(?im)^[ \t]*bgm[ \t]*=[ \t]*([^;\r\n]*?)[ \t]*(?:;|\r?$)`)
 	for _, sb := range motifStoryboards(reflect.ValueOf(m).Elem()) {
 		def := FileExist(sb)
 		if def == "" {

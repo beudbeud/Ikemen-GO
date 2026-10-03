@@ -2,15 +2,13 @@ package main
 
 import (
 	"reflect"
-	"regexp"
 	"testing"
 )
 
 func TestWarmBgmRegexp(t *testing.T) {
-	re := regexp.MustCompile(`(?im)^[ \t]*bgm[ \t]*=[ \t]*([^;\r\n]*?)[ \t]*(?:;|\r?$)`)
 	text := "[Scene 0]\r\nbgm = intropage1.mp3\r\n;bgm = no.mp3\r\n  bgm = Icare-Atlas echo.mp3 ; comment\nbgm.loop = 1\nbgm =\n"
 	var got []string
-	for _, m := range re.FindAllStringSubmatch(text, -1) {
+	for _, m := range bgmLine.FindAllStringSubmatch(text, -1) {
 		if m[1] != "" {
 			got = append(got, m[1])
 		}

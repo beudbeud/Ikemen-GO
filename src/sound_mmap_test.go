@@ -70,6 +70,7 @@ func TestSndMmap(t *testing.T) {
 type panicStreamer struct{ beep.StreamSeeker }
 
 func (panicStreamer) Stream([][2]float64) (int, bool) { panic("corrupt wave") }
+func (panicStreamer) Len() int                        { return 7 }
 
 // A mapped wave is not checked at load: a decoder panic must end the sound,
 // not the mixer.
@@ -81,5 +82,8 @@ func TestSafeStreamer(t *testing.T) {
 	}
 	if _, ok := s.Stream(buf[:]); ok {
 		t.Fatal("dead stream played again")
+	}
+	if s.Position() != 7 {
+		t.Fatal("dead stream does not read as finished: its channel is never freed")
 	}
 }
