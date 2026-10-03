@@ -828,6 +828,21 @@ func (s *System) runMainThreadTask() {
 	}
 }
 
+// runMainThreadTaskFor runs queued tasks for up to d, leaving the rest for
+// the next frame: a background preload (portraits during the logo and intro)
+// queues hundreds of uploads, and draining them in one go froze menus for up
+// to 600ms on a Pi.
+func (s *System) runMainThreadTaskFor(d time.Duration) {
+	for deadline := time.Now().Add(d); time.Now().Before(deadline); {
+		select {
+		case f := <-s.mainThreadTask:
+			f()
+		default:
+			return
+		}
+	}
+}
+
 func (s *System) keepAlive() {
 	//s.keepAliveProfile = true
 	// Log elapsed time since previous keepAlive and where this call came from.
@@ -875,7 +890,11 @@ func (s *System) await(fps int) bool {
 		defer gfx.BeginFrame(sys.netConnection == nil)
 	}
 
-	s.runMainThreadTask()
+	if s.loader.state == LS_Loading {
+		s.runMainThreadTask() // the screen waits on the load anyway
+	} else {
+		s.runMainThreadTaskFor(4 * time.Millisecond)
+	}
 
 	// As a libretro core the frontend paces us: SwapBuffers above already
 	// blocked until retro_run asked for this frame, so skip our own timing.
@@ -4792,6 +4811,7 @@ func (s *Select) ensurePreloadWorker() {
 	s.preloadWorkerRun = true
 	s.preloadMu.Unlock()
 	SafeGo(func() {
+		lowPriority()
 		s.preloadWorkerLoop()
 	})
 }

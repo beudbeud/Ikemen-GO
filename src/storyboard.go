@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"gopkg.in/ini.v1"
@@ -337,6 +338,9 @@ func (s *Storyboard) loadFiles() {
 			if err != nil {
 				LogMessage("Failed to load %v: %v", filename, err)
 			}
+			// Its textures now, while the screen still shows the last one,
+			// not on its first frame.
+			lazyMakeNow(300 * time.Millisecond)
 		}
 		if s.Sff == nil {
 			s.Sff = newSff()

@@ -6,3 +6,5 @@ package main
 func gettid() int { return 0 }
 
 func willNeed([]byte) {}
+
+func lowPriority() {}

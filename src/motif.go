@@ -1843,6 +1843,9 @@ func loadMotif(def string) (*Motif, error) {
 
 	m.Music = parseMusicSection(pickLangSectionMerged(iniFile, "Music"))
 	m.Music.DebugDump("Motif [Music]")
+	if libretroPresent != nil {
+		motifWarmMusic(&m)
+	}
 
 	return &m, nil
 }

@@ -17,15 +17,17 @@ func TestLazyQueue(t *testing.T) {
 	}
 	keep := []*Sprite{mk(5000, 0), mk(0, 1), mk(0, 0)}
 	lazyEnqueue(append([]*Sprite{mk(200, 0)}, keep...)) // the 200 one is dropped
-	if got := lazyQueue.q[0].Value(); got != keep[2].lazy {
+	if got := lazyQueue.q[0].w.Value(); got != keep[2].lazy {
 		t.Fatal("queue not ordered by group then number")
 	}
 
 	// Dropped sprites are skipped; the cap veto stops before making anything.
 	runtime.GC()
 	vetoed := 0
-	if lazyPrefetchOne(func() bool { vetoed++; return false }) || vetoed != 1 {
-		t.Fatalf("veto: made something or asked %d times", vetoed)
+	lazyGPUOK = func() bool { vetoed++; return false }
+	t.Cleanup(func() { lazyGPUOK = nil })
+	if made, retry := lazyPrefetchOne(); made || retry || vetoed != 1 {
+		t.Fatalf("veto: made %v retry %v, asked %d times", made, retry, vetoed)
 	}
 	runtime.KeepAlive(keep)
 }

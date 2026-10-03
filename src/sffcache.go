@@ -36,8 +36,12 @@ const sffCacheMagic = "IKSFC001"
 
 // sffCacheMaxBytes caps the cache directory. It lives in the frontend's share
 // (an SD card on Recalbox), where 16.8GB of entries were found uncapped.
+// 2GiB was too small for an HD pack at full definition (sprite detail Auto at
+// its authored size): Ultimate Cosmos' menus, effects and two characters are
+// ~2.4GiB of texels, so every load evicted what the next one needed and the
+// boot fell back to decoding -- 113s of frozen screen.
 // ponytail: fixed cap; make it a core option if a pack needs more cached.
-const sffCacheMaxBytes = 2 << 30
+const sffCacheMaxBytes = 6 << 30
 
 type sffCaptureEntry struct {
 	off         int64 // position of the pixel blob in the spill file

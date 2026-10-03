@@ -257,6 +257,7 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 
 	speaker = lr.speaker // sys.init() keeps a speaker that is already set
 	libretroPresent = libretroPresentFrame
+	lazyGPUOK = libretroGPUOK
 	libretroPollInput = libretroDrainKeys
 	libretroExit = libretroOnExit
 	libretroRumble = libretroQueueRumble
@@ -408,6 +409,15 @@ func libretroPresentFrame() {
 	// the other buffer, so this is the last moment the frame is where a dump
 	// reads it.
 	libretroBenchFrame(w, h, step)
+	// A frame over budget: say whether lazy textures or sound checks were in it.
+	if step > 16*time.Millisecond && lr.st.on {
+		fmt.Fprintf(os.Stderr, "Ikemen GO: slow frame %.1fms: %d on-demand textures in %.1fms, %d tasks queued, sound checks %d in %.1fms\n",
+			float64(step)/1e6, lazyDemandN, float64(lazyDemandT)/1e6, len(sys.mainThreadTask),
+			sndCheckN.Load(), float64(sndCheckT.Load())/1e6)
+	}
+	lazyDemandN, lazyDemandT = 0, 0
+	sndCheckN.Store(0)
+	sndCheckT.Store(0)
 	if lr.w != w || lr.h != h {
 		lr.w, lr.h = w, h
 		if !libretroHW.active {
@@ -830,30 +840,33 @@ func libretroGPUBytes() int64 {
 // waiting, and GPU memory stops at a quarter of the RAM (1GiB on a 4GiB Pi):
 // past that, sprites stay on demand. True when try succeeded.
 func libretroPrefetch(try func() bool) bool {
-	if lr.gpuCap == 0 {
-		lr.gpuCap = libretroMemTotal() / 4
-		if lr.gpuCap <= 0 {
-			lr.gpuCap = -1 // unknown: no cap
-		}
-	}
-	ok := func() bool {
-		if lr.gpuCap < 0 {
-			return true
-		}
-		if time.Since(lr.gpuAt) > time.Second {
-			lr.gpuAt, lr.gpuUsed = time.Now(), libretroGPUBytes()
-		}
-		return lr.gpuUsed < lr.gpuCap
-	}
 	for !lr.st.reqAt.IsZero() && time.Since(lr.st.reqAt) < 8*time.Millisecond {
 		if try() {
 			return true
 		}
-		if !lazyPrefetchOne(ok) {
+		if made, _ := lazyPrefetchOne(); !made {
 			break
 		}
 	}
 	return false
+}
+
+// libretroGPUOK is lazyGPUOK for the core: GPU memory, as the kernel reports
+// it once a second, below a quarter of the RAM. Unknown: no cap.
+func libretroGPUOK() bool {
+	if lr.gpuCap == 0 {
+		lr.gpuCap = libretroMemTotal() / 4
+		if lr.gpuCap <= 0 {
+			lr.gpuCap = -1
+		}
+	}
+	if lr.gpuCap < 0 {
+		return true
+	}
+	if time.Since(lr.gpuAt) > time.Second {
+		lr.gpuAt, lr.gpuUsed = time.Now(), libretroGPUBytes()
+	}
+	return lr.gpuUsed < lr.gpuCap
 }
 
 // libretroLogMemory prints the Go heap next to the process RSS: their gap is

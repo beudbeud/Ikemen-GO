@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ikemen-engine/beep/v2"
@@ -380,6 +381,16 @@ func (bgm *Bgm) Open(filename string, loop, bgmVolume, bgmLoopStart, bgmLoopEnd,
 		LogMessage("Failed to open BGM: %v", err)
 		return
 	}
+	// Decoders seek and read in small steps (go-mp3 walks every frame header
+	// at open): from a mapping that is memory work, from a USB stick it was
+	// 300ms of frozen screen at each menu change, 7s when the cache was cold.
+	if osf, ok := f.(*os.File); ok {
+		if m := mmapFile(osf); m != nil {
+			willNeed(m.data)
+			osf.Close()
+			f = mappedFile{bytes.NewReader(m.data), m}
+		}
+	}
 	var format beep.Format
 	if HasExtension(bgm.filename, ".ogg") {
 		bgm.streamer, format, err = vorbis.Decode(f)
@@ -730,6 +741,28 @@ type sndReader struct {
 	mapping *fileMapping
 }
 
+// mappedFile reads a whole mapped file; closing it is the GC's job.
+type mappedFile struct {
+	*bytes.Reader
+	mapping *fileMapping
+}
+
+func (mappedFile) Close() error { return nil }
+
+// sndChecks counts the background wave checks still running (LoadSndFiltered).
+var sndChecks sync.WaitGroup
+
+// sndWaitChecks waits up to d for them: a match's first sounds (intro voices)
+// would otherwise be checked on the GL thread when first played, 110ms each.
+func sndWaitChecks(d time.Duration) {
+	done := make(chan struct{})
+	go func() { sndChecks.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(d):
+	}
+}
+
 func readSound(f io.ReadSeekCloser, size uint32, m *fileMapping) (*Sound, error) {
 	if size < 128 {
 		return nil, fmt.Errorf("wav size is too small")
@@ -764,9 +797,20 @@ func readSound(f io.ReadSeekCloser, size uint32, m *fileMapping) (*Sound, error)
 
 // playable reports whether the wave decodes to its end, checking it once.
 func (s *Sound) playable() bool {
-	s.check.Do(func() { s.bad = !wavPlaysThrough(s.wavData) })
+	s.check.Do(func() {
+		t0 := time.Now()
+		s.bad = !wavPlaysThrough(s.wavData)
+		if libretroGLTid != 0 && gettid() == libretroGLTid {
+			sndCheckN.Add(1)
+			sndCheckT.Add(int64(time.Since(t0)))
+		}
+	})
 	return !s.bad
 }
+
+// sndCheckN/T count the checks done on the GL thread, for the slow-frame
+// log (IKEMEN_PROFILE).
+var sndCheckN, sndCheckT atomic.Int64
 
 // wavPlaysThrough decodes a whole wave and catches any panic: a sound that
 // can't be fully played would freeze the engine.
@@ -955,7 +999,10 @@ func LoadSndFiltered(filename string, keepItem func([2]int32) bool, max uint32) 
 				sounds = append(sounds, so)
 			}
 		}
+		sndChecks.Add(1)
 		go func() {
+			lowPriority()
+			defer sndChecks.Done()
 			for _, so := range sounds {
 				if !so.playable() {
 					fmt.Fprintf(os.Stderr, "WARNING: a sound in %v is corrupted and can't be played, so it was disabled\n", filename)

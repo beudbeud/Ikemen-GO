@@ -2940,6 +2940,8 @@ func systemScriptInit(l *lua.LState) {
 				}
 				sys.await(sys.gameRenderSpeed())
 			}
+			lazyMakeNow(time.Second)
+			sndWaitChecks(5 * time.Second)
 			runtime.GC()
 			return nil
 		}

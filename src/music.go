@@ -113,6 +113,10 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"os"
+	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -502,4 +506,75 @@ func (m Music) act() {
 			}
 		}
 	}
+}
+
+// motifWarmMusic reads the music of the motif's screens and of its storyboards
+// (logo, intro...) into the page cache in the background. Opening a BGM walks
+// the whole file (go-mp3 indexes every frame), which off a USB stick froze
+// each menu change for 100-300ms; from the page cache it takes 1-3ms.
+// ponytail: storyboard music is found with a regexp over their .def text, not
+// a parse; a "bgm" key elsewhere in those files only warms one file too many.
+func motifWarmMusic(m *Motif) {
+	// Storyboards first, in field order (logo, intro): they play right after
+	// the boot, while the USB stick is still busy with background preloads.
+	var files []string
+	bgmLine := regexp.MustCompile(`(?im)^[ \t]*bgm[ \t]*=[ \t]*([^;\r\n]*?)[ \t]*(?:;|\r?$)`)
+	for _, sb := range motifStoryboards(reflect.ValueOf(m).Elem()) {
+		def := FileExist(sb)
+		if def == "" {
+			continue
+		}
+		text, err := LoadText(def)
+		if err != nil {
+			continue
+		}
+		for _, mt := range bgmLine.FindAllStringSubmatch(text, -1) {
+			if mt[1] != "" {
+				files = append(files, SearchFile(mt[1], []string{def, "", "data/"}, "sound/"))
+			}
+		}
+	}
+	for _, list := range m.Music {
+		for _, bg := range list {
+			if bg != nil && bg.bgmusic != "" {
+				files = append(files, SearchFile(bg.bgmusic, []string{m.Def, "", "data/"}, "sound/"))
+			}
+		}
+	}
+	go func() {
+		lowPriority()
+		seen := map[string]bool{}
+		for _, f := range files {
+			p := FileExist(f)
+			if p == "" || seen[p] {
+				continue
+			}
+			seen[p] = true
+			if fh, err := os.Open(p); err == nil {
+				io.Copy(io.Discard, fh)
+				fh.Close()
+			}
+		}
+	}()
+}
+
+// motifStoryboards collects the resolved Storyboard paths of a motif's
+// sections (struct fields named Storyboard), not following pointers.
+func motifStoryboards(v reflect.Value) []string {
+	var out []string
+	if v.Kind() != reflect.Struct {
+		return nil
+	}
+	for i := 0; i < v.NumField(); i++ {
+		f, sf := v.Field(i), v.Type().Field(i)
+		switch {
+		case sf.Name == "Storyboard" && f.Kind() == reflect.String:
+			if s := f.String(); s != "" {
+				out = append(out, s)
+			}
+		case f.Kind() == reflect.Struct:
+			out = append(out, motifStoryboards(f)...)
+		}
+	}
+	return out
 }

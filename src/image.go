@@ -714,7 +714,14 @@ type lazyTex struct {
 func (s *Sprite) texture() Texture {
 	if s.Tex == nil && s.lazy != nil {
 		l := s.lazy
-		if !l.make() {
+		t0 := time.Now()
+		fresh := l.tex == nil
+		ok := l.make()
+		if fresh {
+			lazyDemandN++
+			lazyDemandT += time.Since(t0)
+		}
+		if !ok {
 			s.lazy = nil
 			return nil
 		}
@@ -758,8 +765,22 @@ func (l *lazyTex) make() bool {
 // Weak: a sprite whose Sff was dropped must not be made, nor kept alive.
 var lazyQueue struct {
 	sync.Mutex
-	q []weak.Pointer[lazyTex]
+	q []lazyEntry
 }
+
+type lazyEntry struct {
+	w    weak.Pointer[lazyTex]
+	g, n uint16 // sprite group and number: the prefetch order
+}
+
+// lazyDemandN/T: textures made on first draw this frame and the time spent,
+// for the slow-frame log (IKEMEN_PROFILE).
+var lazyDemandN int
+var lazyDemandT time.Duration
+
+// lazyGPUOK reports whether more GPU memory may go to prefetched textures
+// (set by the libretro core; nil: no cap).
+var lazyGPUOK func() bool
 
 // lazyEnqueue adds the lazy textures of one loaded file, lowest sprite
 // groups first: stance, intros and basic moves come before effects.
@@ -768,18 +789,19 @@ func lazyEnqueue(sprites []*Sprite) {
 		return sprites[i].Group < sprites[j].Group ||
 			sprites[i].Group == sprites[j].Group && sprites[i].Number < sprites[j].Number
 	})
-	ws := make([]weak.Pointer[lazyTex], len(sprites))
+	es := make([]lazyEntry, len(sprites))
 	for i, spr := range sprites {
-		ws[i] = weak.Make(spr.lazy)
+		es[i] = lazyEntry{weak.Make(spr.lazy), spr.Group, spr.Number}
 	}
 	lazyQueue.Lock()
-	lazyQueue.q = append(lazyQueue.q, ws...)
+	lazyQueue.q = append(lazyQueue.q, es...)
 	lazyQueue.Unlock()
 	// Read the texels in, in prefetch order, so that making a prefetched
 	// texture on the GL thread never waits on the disk.
 	go func() {
-		for _, w := range ws {
-			l := w.Value()
+		lowPriority()
+		for _, e := range es {
+			l := e.w.Value()
 			if l == nil {
 				continue
 			}
@@ -798,34 +820,59 @@ func lazyEnqueue(sprites []*Sprite) {
 	}()
 }
 
-// lazyWarmSink keeps the page-touching loop from being optimised away.
-var lazyWarmSink atomic.Uint32
-
-// lazyPrefetchOne makes the next queued texture that is still wanted, unless
-// ok vetoes it (GPU memory cap). False when there is nothing (more) to do.
-func lazyPrefetchOne(ok func() bool) bool {
+// lazyPrefetchOne makes the next queued texture that is still wanted (GL
+// thread). retry: the next one is not read in yet; neither: nothing more to
+// do, the queue being empty or the GPU memory cap reached.
+func lazyPrefetchOne() (made, retry bool) {
 	for {
 		lazyQueue.Lock()
 		if len(lazyQueue.q) == 0 {
 			lazyQueue.Unlock()
-			return false
+			return false, false
 		}
-		l := lazyQueue.q[0].Value()
+		l := lazyQueue.q[0].w.Value()
 		if l == nil || l.tex != nil || l.data == nil {
 			lazyQueue.q = lazyQueue.q[1:]
 			lazyQueue.Unlock()
 			continue
 		}
-		if !l.warm.Load() || !ok() {
+		if !l.warm.Load() {
 			lazyQueue.Unlock()
-			return false
+			return false, true
+		}
+		if lazyGPUOK != nil && !lazyGPUOK() {
+			lazyQueue.Unlock()
+			return false, false
 		}
 		lazyQueue.q = lazyQueue.q[1:]
 		lazyQueue.Unlock()
 		l.make()
-		return true
+		return true, false
 	}
 }
+
+// lazyMakeNow makes queued textures for up to budget, lowest groups of every
+// loaded file first, before a match shows its first frame: prefetching in
+// idle time alone left its intro hitching while the textures came in.
+func lazyMakeNow(budget time.Duration) {
+	lazyQueue.Lock()
+	sort.SliceStable(lazyQueue.q, func(i, j int) bool {
+		a, b := lazyQueue.q[i], lazyQueue.q[j]
+		return a.g < b.g || a.g == b.g && a.n < b.n
+	})
+	lazyQueue.Unlock()
+	for deadline := time.Now().Add(budget); time.Now().Before(deadline); {
+		made, retry := lazyPrefetchOne()
+		if retry {
+			time.Sleep(time.Millisecond)
+		} else if !made {
+			return
+		}
+	}
+}
+
+// lazyWarmSink keeps the page-touching loop from being optimised away.
+var lazyWarmSink atomic.Uint32
 
 func newSprite() *Sprite {
 	return &Sprite{palidx: -1}
