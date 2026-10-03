@@ -200,15 +200,19 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	//    post-processing belongs to the frontend's own shader pipeline.
 	//  - BootLoadingMode 0 (the engine default) preloads every portrait and
 	//    stage preview before the logo: ~19s of frozen screen for Ultimate
-	//    Cosmos on a Pi reading from USB. 1 does it in the background while
-	//    the logo and intro play, and still waits before the select screen.
+	//    Cosmos on a Pi reading from USB. 2 does it in the background and
+	//    opens the select screen at once, portraits filling in as they load
+	//    (the hovered one first). Not 1, which waits there for all of them: a
+	//    preload walks each SFFv1 character file end to end, so a 176
+	//    character pack (1.9GiB) on a 6MiB/s stick kept the player on a
+	//    loading screen for minutes.
 	libretroOverrideConfig(func(cfg *Config) {
 		cfg.Video.KeepAspect = true
 		cfg.Video.Framerate = int(libretroFPS)
 		cfg.Config.FirstRun = false
 		cfg.Video.ExternalShaders = nil
 		if cfg.Config.BootLoadingMode == 0 {
-			cfg.Config.BootLoadingMode = 1
+			cfg.Config.BootLoadingMode = 2
 		}
 	})
 	libretroLowRAM = libretroMemTotal() > 0 && libretroMemTotal() < 3<<30
