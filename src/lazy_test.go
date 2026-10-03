@@ -24,11 +24,10 @@ func TestLazyQueue(t *testing.T) {
 
 	// Dropped sprites are skipped; the cap veto stops before making anything.
 	runtime.GC()
-	vetoed := 0
-	lazyGPUOK = func() bool { vetoed++; return false }
-	t.Cleanup(func() { lazyGPUOK = nil })
-	if made, retry := lazyPrefetchOne(); made || retry || vetoed != 1 {
-		t.Fatalf("veto: made %v retry %v, asked %d times", made, retry, vetoed)
+	lazyFull.Store(true)
+	t.Cleanup(func() { lazyFull.Store(false) })
+	if made, retry := lazyPrefetchOne(); made || retry {
+		t.Fatalf("veto: made %v retry %v", made, retry)
 	}
 	runtime.KeepAlive(keep)
 }

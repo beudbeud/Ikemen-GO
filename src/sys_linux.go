@@ -4,10 +4,9 @@ import (
 	"os"
 	"runtime"
 	"syscall"
+	"time"
 	"unsafe"
 )
-
-func gettid() int { return syscall.Gettid() }
 
 // willNeed starts reading a whole mapping into the page cache in the
 // background, so that a later first touch does not wait on the disk.
@@ -26,7 +25,15 @@ func populate(b []byte) {
 	start := uintptr(unsafe.Pointer(&b[0]))
 	base := start &^ (ps - 1)
 	syscall.Syscall(syscall.SYS_MADVISE, base, start+uintptr(len(b))-base, 22 /* MADV_POPULATE_READ */)
-	runtime.KeepAlive(b)
+}
+
+// threadRusage is what the calling thread has used so far: major page faults
+// (disk reads), involuntary context switches, CPU time in and out of the kernel.
+func threadRusage() (faults, preempt int64, user, sys time.Duration) {
+	var ru syscall.Rusage
+	syscall.Getrusage(1 /* RUSAGE_THREAD */, &ru)
+	return int64(ru.Majflt), int64(ru.Nivcsw),
+		time.Duration(syscall.TimevalToNsec(ru.Utime)), time.Duration(syscall.TimevalToNsec(ru.Stime))
 }
 
 // lowPriority gives the calling goroutine's thread nice 10 for the rest of

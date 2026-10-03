@@ -29,8 +29,8 @@ package main
 // math.random uses Go's auto-seeded one, so two unseeded AI fights diverge
 // within a few seconds. IKEMEN_SEED pins both.
 //
-// Both quit through the engine's own exit path instead of waiting for a
-// signal: a SIGTERM racing the core's shutdown is how a profile or a log gets
+// Both end the run themselves (the frontend is asked to shut down) instead of
+// waiting for a signal: a SIGTERM racing the core's shutdown is how a profile or a log gets
 // cut short.
 
 import (
@@ -129,7 +129,7 @@ func libretroParseRange(v string) (from, to uint64, ok bool) {
 	}
 	from, errA := strconv.ParseUint(a, 10, 64)
 	to, errB := strconv.ParseUint(b, 10, 64)
-	return from, to, errA == nil && errB == nil && to > from
+	return from, to, errA == nil && errB == nil && from > 0 && to > from
 }
 
 // libretroBenchFrame runs on the game thread for every presented frame, after
@@ -236,17 +236,7 @@ func libretroBenchStartPprof() {
 	if path == "" {
 		return
 	}
-	f, err := os.Create(path)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Ikemen GO: bench pprof:", err)
-		return
-	}
-	if err := pprof.StartCPUProfile(f); err != nil {
-		fmt.Fprintln(os.Stderr, "Ikemen GO: bench pprof:", err)
-		f.Close()
-		return
-	}
-	lrBench.pprof = f
+	lrBench.pprof = libretroStartCPUProfile(path)
 }
 
 // libretroBenchSummary formats the one line the A/B driver parses. fps is

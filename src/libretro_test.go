@@ -260,6 +260,7 @@ func TestSffCacheRoundTrip(t *testing.T) {
 	s.palList.SetSource(0, []uint32{0xff00ff00, 0x11223344})
 	s.palList.PalTable[[2]uint16{1, 1}] = 0
 	s.palList.numcols[[2]uint16{1, 1}] = 2
+	s.palList.duplicatePals[0] = []int{3, 5}
 
 	mk := func(g, n uint16) *Sprite {
 		spr := newSprite()
@@ -279,7 +280,12 @@ func TestSffCacheRoundTrip(t *testing.T) {
 	if !sffCacheBegin() {
 		t.Fatal("sffCacheBegin refused")
 	}
-	sffCaptureAdd(list[0], []byte{1, 2, 3, 4, 5, 6, 7, 8}, 4, 2, 8)
+	for _, spr := range list {
+		sffCaptureExpect(spr)
+	}
+	trim := [2][4]float32{{1, 0, 3, 2}}
+	sffCaptureAdd(list[0], []byte{1, 2, 3, 4, 5, 6, 7, 8}, 4, 2, 8, trim)
+	sffCaptureAdd(newSprite(), []byte{9, 9}, 2, 1, 8, trim) // another loader's sprite: not ours
 	// list[1] is a link, list[2] stays blank
 	captured, spill := sffCacheEnd()
 	sffCacheStore(src, true, false, s, list, links, captured, spill)
@@ -305,8 +311,20 @@ func TestSffCacheRoundTrip(t *testing.T) {
 		l.w != 4 || l.h != 2 || l.depth != 8 || l.keep == nil {
 		t.Fatalf("lazy texels: %+v", spr.lazy)
 	}
-	if got.sprites[[2]uint16{0, 1}].lazy != spr.lazy {
-		t.Error("linked sprite does not share the lazy texels")
+	if linked := got.sprites[[2]uint16{0, 1}]; linked.lazy != spr.lazy || linked.trim != trim {
+		t.Error("linked sprite does not share the lazy texels and their trim")
+	}
+	if spr.trim != trim {
+		t.Errorf("trim boxes lost: %v", spr.trim)
+	}
+	// Texels are on disk once: magic, the 8 bytes, then the table.
+	if st, err := os.Stat(sffCachePath(src, true, false)); err != nil {
+		t.Error(err)
+	} else if st.Size() > 400 {
+		t.Errorf("entry file is %d bytes", st.Size())
+	}
+	if tmps, _ := filepath.Glob(filepath.Join(dir, "ikemen-go", "*")); len(tmps) != 1 {
+		t.Errorf("leftover files in the cache directory: %v", tmps)
 	}
 	if got.sprites[[2]uint16{9000, 0}].lazy != nil {
 		t.Error("blank sprite got lazy texels")
@@ -319,6 +337,9 @@ func TestSffCacheRoundTrip(t *testing.T) {
 	}
 	if got.palList.numcols[[2]uint16{1, 1}] != 2 {
 		t.Errorf("numcols lost")
+	}
+	if d := got.palList.duplicatePals[0]; len(d) != 2 || d[0] != 3 || d[1] != 5 {
+		t.Errorf("duplicatePals lost: %v (RemapPal follows them)", got.palList.duplicatePals)
 	}
 
 	// Wrong flags -> different key -> miss.
@@ -451,6 +472,8 @@ func TestLibretroForceInputReachesLiveTables(t *testing.T) {
 	defer func() { libretroConfigOverride = saved }()
 	libretroConfigOverride = nil
 	libretroForceInput()
+	keys, joys := sys.keyConfig, sys.joystickConfig
+	t.Cleanup(func() { sys.keyConfig, sys.joystickConfig = keys, joys })
 	sys.keyConfig, sys.joystickConfig = nil, nil
 	if _, err := loadConfig(path); err != nil {
 		t.Fatal(err)
@@ -465,6 +488,8 @@ func TestLibretroForceInputReachesLiveTables(t *testing.T) {
 
 func TestLibretroEnvArgs(t *testing.T) {
 	t.Setenv("IKEMEN_ARGS", "-p1 Kfm -p2 Kfm -s stages/kfm.def -p1.ai 8 -nosound")
+	flags := sys.cmdFlags
+	t.Cleanup(func() { sys.cmdFlags = flags })
 	sys.cmdFlags = nil
 	libretroEnvArgs()
 	want := map[string]string{"-p1": "Kfm", "-p2": "Kfm", "-s": "stages/kfm.def", "-p1.ai": "8", "-nosound": ""}
@@ -485,7 +510,8 @@ func TestLibretroParseRange(t *testing.T) {
 		ok       bool
 	}{
 		{"600:2400", 600, 2400, true},
-		{"0:1", 0, 1, true},
+		{"1:2", 1, 2, true},
+		{"0:1", 0, 1, false},      // frames count from 1
 		{"2400:600", 0, 0, false}, // empty window
 		{"600", 0, 0, false},
 		{"a:b", 0, 0, false},

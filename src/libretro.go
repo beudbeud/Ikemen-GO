@@ -35,7 +35,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 	"unsafe"
 
@@ -88,7 +87,7 @@ var lr struct {
 	keyq []libretroKeyEvent // filled by retro_run, drained on the game thread
 
 	prof *os.File // IKEMEN_PROFILE: CPU profile in flight
-	st   struct { // IKEMEN_PROFILE: per-5s frame statistics
+	st   struct { // frame timing; the per-5s statistics only under IKEMEN_PROFILE
 		on                   bool
 		runs, frames, missed int
 		step, stepMax, read  time.Duration
@@ -262,7 +261,6 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 
 	speaker = lr.speaker // sys.init() keeps a speaker that is already set
 	libretroPresent = libretroPresentFrame
-	lazyGPUOK = libretroGPUOK
 	libretroPollInput = libretroDrainKeys
 	libretroExit = libretroOnExit
 	libretroRumble = libretroQueueRumble
@@ -274,7 +272,6 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	bootStart := time.Now()
 	go func() {
 		runtime.LockOSThread()
-		libretroGLTid = gettid()
 		realMain()
 	}()
 
@@ -326,7 +323,7 @@ func retro_run() {
 	libretroApplyRumble()
 	lr.st.runs++
 
-	// The two options are only read when content loads (window, engine root and
+	// Core options are only read when content loads (window, engine root and
 	// Lua state are all built from them), so a change mid-run cannot be
 	// applied; say so instead of silently ignoring it.
 	var dirty C.bool
@@ -443,7 +440,7 @@ func libretroPresentFrame() {
 	}
 	lr.readyOnce.Do(func() { close(lr.ready) })
 
-	libretroGPUOK() // samples GPU memory once a second, evicting past the cap
+	libretroGPUSample()
 	if !libretroPrefetch(func() bool {
 		select {
 		case lr.frameDone <- struct{}{}:
@@ -539,17 +536,21 @@ func libretroStartProfile() {
 	}
 	lr.st.on = true
 	lr.st.since = time.Now()
-	f, err := os.Create(filepath.Join(dir, "cpu.pprof"))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Ikemen GO: profile:", err)
-		return
-	}
-	if err := pprof.StartCPUProfile(f); err != nil {
-		fmt.Fprintln(os.Stderr, "Ikemen GO: profile:", err)
+	lr.prof = libretroStartCPUProfile(filepath.Join(dir, "cpu.pprof"))
+}
+
+// libretroStartCPUProfile returns the file to close after StopCPUProfile, nil
+// when the profile could not start.
+func libretroStartCPUProfile(path string) *os.File {
+	f, err := os.Create(path)
+	if err == nil {
+		if err = pprof.StartCPUProfile(f); err == nil {
+			return f
+		}
 		f.Close()
-		return
 	}
-	lr.prof = f
+	fmt.Fprintln(os.Stderr, "Ikemen GO: profile:", err)
+	return nil
 }
 
 func libretroStopProfile() {
@@ -684,7 +685,12 @@ func libretroRedirectSaves(root string) {
 			continue
 		}
 		if b, err := os.ReadFile(f[0]); err == nil {
-			os.WriteFile(f[1], b, 0644)
+			if err := os.WriteFile(f[1], b, 0644); err != nil {
+				// A truncated copy would pass for the player's file forever.
+				os.Remove(f[1])
+				fmt.Fprintln(os.Stderr, "Ikemen GO: cannot write to the save directory:", err)
+				return
+			}
 		}
 	}
 	// processCommandLine is a no-op in a core (os.Args belongs to the
@@ -805,19 +811,36 @@ func libretroMemTotal() int64 {
 	if mb, err := strconv.Atoi(os.Getenv("IKEMEN_MEMTOTAL_MB")); err == nil && mb > 0 {
 		return int64(mb) << 20
 	}
-	b, err := os.ReadFile("/proc/meminfo")
-	if err != nil {
-		return 0
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		if v, ok := strings.CutPrefix(line, "MemTotal:"); ok {
-			if f := strings.Fields(v); len(f) > 0 {
-				if kb, err := strconv.ParseInt(f[0], 10, 64); err == nil {
-					return kb * 1024
-				}
-			}
-			break
+	b, _ := os.ReadFile("/proc/meminfo")
+	return procBytes(string(b), "MemTotal:")
+}
+
+// procBytes finds the "key   123 kB" line of a /proc text and returns its
+// value in bytes, 0 when absent. The unit matters: DRM fdinfo prints KiB,
+// MiB or plain bytes, whichever is exact.
+func procBytes(text, key string) int64 {
+	for _, line := range strings.Split(text, "\n") {
+		v, ok := strings.CutPrefix(line, key)
+		if !ok {
+			continue
 		}
+		f := strings.Fields(v)
+		if len(f) == 0 {
+			return 0
+		}
+		n, err := strconv.ParseInt(f[0], 10, 64)
+		if err != nil {
+			return 0
+		}
+		if len(f) > 1 {
+			switch f[1] {
+			case "kB", "KiB":
+				n <<= 10
+			case "MiB":
+				n <<= 20
+			}
+		}
+		return n
 	}
 	return 0
 }
@@ -828,19 +851,8 @@ func libretroGPUBytes() int64 {
 	fds, _ := os.ReadDir("/proc/self/fdinfo")
 	var most int64
 	for _, fd := range fds {
-		b, err := os.ReadFile("/proc/self/fdinfo/" + fd.Name())
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(string(b), "\n") {
-			if v, ok := strings.CutPrefix(line, "drm-total-memory:"); ok {
-				if f := strings.Fields(v); len(f) > 0 {
-					if kb, err := strconv.ParseInt(f[0], 10, 64); err == nil {
-						most = max(most, kb*1024)
-					}
-				}
-			}
-		}
+		b, _ := os.ReadFile("/proc/self/fdinfo/" + fd.Name())
+		most = max(most, procBytes(string(b), "drm-total-memory:"))
 	}
 	return most
 }
@@ -864,10 +876,11 @@ func libretroPrefetch(try func() bool) bool {
 	return false
 }
 
-// libretroGPUOK is lazyGPUOK for the core: GPU memory, as the kernel reports
-// it once a second, below a quarter of the RAM (Recalbox recommends a 2GiB
-// Pi 5: 512MiB). Unknown: no cap. Each reading over the cap evicts.
-func libretroGPUOK() bool {
+// libretroGPUSample runs once per presented frame: it reads GPU memory, as the
+// kernel reports it, once a second, and holds it to a quarter of the RAM
+// (Recalbox recommends a 2GiB Pi 5: 512MiB). At the cap prefetch stops
+// (lazyFull); past it, idle textures are evicted. Unknown: no cap.
+func libretroGPUSample() {
 	if lr.gpuCap == 0 {
 		lr.gpuCap = libretroMemTotal() / 4
 		if lr.gpuCap <= 0 {
@@ -875,7 +888,7 @@ func libretroGPUOK() bool {
 		}
 	}
 	if lr.gpuCap < 0 {
-		return true
+		return
 	}
 	if time.Since(lr.gpuAt) > time.Second {
 		lr.gpuAt, lr.gpuUsed = time.Now(), libretroGPUBytes()
@@ -893,7 +906,6 @@ func libretroGPUOK() bool {
 			lr.evictOwed = 0 // nothing idle enough: retry at the next reading
 		}
 	}
-	return lr.gpuUsed < lr.gpuCap
 }
 
 // libretroLogMemory prints the Go heap next to the process RSS: their gap is
@@ -901,23 +913,9 @@ func libretroGPUOK() bool {
 func libretroLogMemory() {
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
-	rss := "?"
-	if b, err := os.ReadFile("/proc/self/status"); err == nil {
-		for _, line := range strings.Split(string(b), "\n") {
-			v, ok := strings.CutPrefix(line, "VmRSS:")
-			if !ok {
-				continue
-			}
-			if f := strings.Fields(v); len(f) > 0 {
-				if kb, err := strconv.ParseInt(f[0], 10, 64); err == nil {
-					rss = fmt.Sprintf("%dMiB", kb>>10)
-				}
-			}
-			break
-		}
-	}
-	fmt.Fprintf(os.Stderr, "Ikemen GO: memory after load: Go heap %dMiB (runtime holds %dMiB), process RSS %s\n",
-		ms.HeapAlloc>>20, ms.HeapSys>>20, rss)
+	b, _ := os.ReadFile("/proc/self/status")
+	fmt.Fprintf(os.Stderr, "Ikemen GO: memory after load: Go heap %dMiB (runtime holds %dMiB), process RSS %dMiB\n",
+		ms.HeapAlloc>>20, ms.HeapSys>>20, procBytes(string(b), "VmRSS:")>>20)
 	libretroWriteHeapProfile("heap-load.pprof")
 }
 
@@ -945,7 +943,10 @@ func libretroWriteHeapProfile(name string) {
 func libretroSpriteDetail() {
 	choice := libretroVariable("ikemen_go_sprite_detail")
 	libretroOverrideConfig(func(cfg *Config) {
-		assetsH := Max(cfg.Video.GameHeight, libretroContentGameH)
+		assetsH := cfg.Video.GameHeight
+		if libretroContentGameH > 0 {
+			assetsH = libretroContentGameH // "Resolution" reframed the game
+		}
 		switch choice {
 		case "Half":
 			libretroSpriteShrink = 2
@@ -1580,15 +1581,12 @@ type frameCost struct {
 // libretroFrameFaults returns what the game thread spent since its previous
 // call: page faults, CPU time in and out of the kernel, preemptions, GC.
 func libretroFrameFaults() (c frameCost) {
-	var ru syscall.Rusage
-	syscall.Getrusage(1 /* RUSAGE_THREAD */, &ru)
+	faults, preempt, user, sys := threadRusage()
 	// runtime/metrics, not ReadMemStats: that one stops the world, and a
 	// goroutine stuck in a page fault made it wait tens of ms every frame.
 	gc := []metrics.Sample{{Name: "/gc/cycles/total:gc-cycles"}}
 	metrics.Read(gc)
-	now := frameCost{faults: int64(ru.Majflt), preempt: int64(ru.Nivcsw),
-		user: time.Duration(syscall.TimevalToNsec(ru.Utime)), sys: time.Duration(syscall.TimevalToNsec(ru.Stime)),
-		gcs: uint32(gc[0].Value.Uint64())}
+	now := frameCost{faults, preempt, user, sys, uint32(gc[0].Value.Uint64())}
 	p := lr.cost
 	c = frameCost{now.faults - p.faults, now.preempt - p.preempt, now.user - p.user, now.sys - p.sys,
 		now.gcs - p.gcs}

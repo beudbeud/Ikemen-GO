@@ -136,7 +136,6 @@ var libretroHWState struct {
 	cur    int // the renderer draws into this one now
 	handed int // handed to the frontend; read on the retro thread while the game thread is parked
 	failed bool
-	warned bool
 }
 
 // libretroHWExport runs on the game thread after the frame's final pass:
@@ -200,10 +199,10 @@ func libretroHWPresent(w, h int) {
 	}
 	f := &hw.frames[hw.handed]
 	if !bool(C.ik_dmabuf_blit(C.int(hw.handed), &f.buf, C.uint(w), C.uint(h), gen, C.ik_hw_framebuffer())) {
-		if !hw.warned {
-			hw.warned = true
-			libretroMessage("Ikemen GO: GPU frame sharing failed: " + C.GoString(C.ik_dmabuf_error()))
-		}
+		// Not retried: each attempt leaves a texture, an FBO and an EGLImage
+		// behind in the frontend's context.
+		hw.failed = true
+		libretroMessage("Ikemen GO: GPU frame sharing failed: " + C.GoString(C.ik_dmabuf_error()))
 		C.ik_video(nil, C.uint(w), C.uint(h), 0)
 		return
 	}

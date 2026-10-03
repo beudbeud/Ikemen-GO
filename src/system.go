@@ -890,7 +890,7 @@ func (s *System) await(fps int) bool {
 		defer gfx.BeginFrame(sys.netConnection == nil)
 	}
 
-	if s.loader.state == LS_Loading {
+	if s.loader.state == LS_Loading || libretroPresent == nil {
 		s.runMainThreadTask() // the screen waits on the load anyway
 	} else {
 		s.runMainThreadTaskFor(4 * time.Millisecond)
@@ -1197,10 +1197,6 @@ func (s *System) dropCanceledLoadData() {
 		}
 	}
 drained:
-	// The dropped uploads never ran their decrement.
-	// ponytail: a task queued between the drain and this reset makes the count
-	// drift low (the throttle loosens), never high; good enough for a budget.
-	texUploadPending.Store(0)
 	s.loadMutex.Lock()
 	defer s.loadMutex.Unlock()
 
@@ -6295,7 +6291,7 @@ func (l *Loader) loadCharacter(pn int, attached bool) int {
 			}
 			return -1
 		}
-		if d := time.Since(compileStart); d > 100*time.Millisecond {
+		if d := time.Since(compileStart); libretroPresent != nil && d > 100*time.Millisecond {
 			fmt.Fprintf(os.Stderr, "Ikemen GO: states %s compiled in %dms\n", cdef, d.Milliseconds())
 		}
 	}

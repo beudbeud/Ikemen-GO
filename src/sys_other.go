@@ -2,11 +2,12 @@
 
 package main
 
-// gettid is unknown here: callers treat 0 as "can't tell which thread".
-func gettid() int { return 0 }
+import "time"
 
 func willNeed([]byte) {}
 
 func lowPriority() {}
 
 func populate([]byte) {}
+
+func threadRusage() (faults, preempt int64, user, sys time.Duration) { return }

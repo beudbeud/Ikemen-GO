@@ -702,13 +702,9 @@ type lazyTex struct {
 	depth  int32
 	filter bool
 	tex    Texture
-	trim   [2][4]float32
 	used   int32       // sys.frameCounter of the last draw, for lazyEvict
 	made   bool        // listed in lazyMade
 	warm   atomic.Bool // texels read in once off the GL thread (lazyEnqueue)
-	// warmTrim is computed by the warming goroutine, valid once warm is set:
-	// scanning the texels costs as much as uploading them.
-	warmTrim [2][4]float32
 }
 
 // texture returns the sprite's texture, making it first if it was left lazy.
@@ -731,7 +727,6 @@ func (s *Sprite) texture() Texture {
 		}
 	}
 	l.used = sys.frameCounter
-	s.trim = l.trim
 	return l.tex
 }
 
@@ -755,11 +750,6 @@ func (l *lazyTex) make() bool {
 	tex.SetData(l.data)
 	if l.tex = tex; !l.made {
 		l.made = true
-		if l.warm.Load() {
-			l.trim = l.warmTrim
-		} else {
-			l.trim = spriteTrims(l.data, l.w, l.h, l.depth)
-		}
 		lazyMade = append(lazyMade, weak.Make(l))
 	}
 	l.used = sys.frameCounter
@@ -829,12 +819,9 @@ var lazyEvictedN int64
 var lazyDemandN int
 var lazyDemandT time.Duration
 
-// lazyFull is set while GPU memory is at the cap (by the libretro core).
+// lazyFull is set while GPU memory is at the cap (by the libretro core):
+// nothing more is prefetched or warmed.
 var lazyFull atomic.Bool
-
-// lazyGPUOK reports whether more GPU memory may go to prefetched textures
-// (set by the libretro core; nil: no cap).
-var lazyGPUOK func() bool
 
 // lazyEnqueue adds the lazy textures of one loaded file, lowest sprite
 // groups first: stance, intros and basic moves come before effects.
@@ -868,7 +855,6 @@ func lazyEnqueue(sprites []*Sprite) {
 			data, keep := l.data, l.keep
 			lazyQueue.Unlock()
 			populate(data)
-			l.warmTrim = spriteTrims(data, l.w, l.h, l.depth)
 			runtime.KeepAlive(keep)
 			l.warm.Store(true)
 		}
@@ -891,13 +877,15 @@ func lazyPrefetchOne() (made, retry bool) {
 			lazyQueue.Unlock()
 			continue
 		}
+		// The cap first: at the cap nothing is warmed either, and waiting
+		// for that kept lazyMakeNow asleep for its whole budget.
+		if lazyFull.Load() {
+			lazyQueue.Unlock()
+			return false, false
+		}
 		if !l.warm.Load() {
 			lazyQueue.Unlock()
 			return false, true
-		}
-		if lazyGPUOK != nil && !lazyGPUOK() {
-			lazyQueue.Unlock()
-			return false, false
 		}
 		lazyQueue.q = lazyQueue.q[1:]
 		lazyQueue.Unlock()
@@ -1123,8 +1111,9 @@ func (s *Sprite) SetPxl(px []byte) {
 		return
 	}
 	px, w, h := libretroShrinkSprite(px, int32(s.Size[0]), int32(s.Size[1]), 1)
-	sffCaptureAdd(s, px, w, h, 8)
-	s.uploadTexture(px, w, h, 8, false)
+	trim := spriteTrims(px, w, h, 8)
+	sffCaptureAdd(s, px, w, h, 8, trim)
+	s.uploadTexture(px, w, h, 8, false, trim)
 }
 
 func (s *Sprite) SetRaw(data []byte, sprWidth int32, sprHeight int32, sprDepth int32) {
@@ -1139,16 +1128,10 @@ func (s *Sprite) SetRaw(data []byte, sprWidth int32, sprHeight int32, sprDepth i
 		}
 	}
 	data, w, h := libretroShrinkSprite(data, sprWidth, sprHeight, sprDepth/8)
-	sffCaptureAdd(s, data, w, h, sprDepth)
-	s.uploadTexture(data, w, h, sprDepth, sys.cfg.Video.RGBSpriteBilinearFilter)
+	trim := spriteTrims(data, w, h, sprDepth)
+	sffCaptureAdd(s, data, w, h, sprDepth, trim)
+	s.uploadTexture(data, w, h, sprDepth, sys.cfg.Video.RGBSpriteBilinearFilter, trim)
 }
-
-// uploadTexture queues the GPU upload of a sprite bitmap on the main thread,
-// which owns the GL context. mainThreadTask is buffered deep enough (64k) that
-// a whole sff's uploads fit without the queuing thread having to drain.
-// texUploadPending is the pixel bytes queued in sys.mainThreadTask and not
-// yet handed to the GPU: the heap a loader is holding on the GL thread's behalf.
-var texUploadPending atomic.Int64
 
 // spriteTrims computes both trim boxes of a bitmap (see Sprite.trim).
 func spriteTrims(data []byte, w, h, depth int32) (trim [2][4]float32) {
@@ -1164,12 +1147,11 @@ func spriteTrims(data []byte, w, h, depth int32) (trim [2][4]float32) {
 	return
 }
 
-func (s *Sprite) uploadTexture(data []byte, w, h, depth int32, filter bool) {
-	trim := spriteTrims(data, w, h, depth)
-	n := int64(len(data))
-	texUploadPending.Add(n)
+// uploadTexture queues the GPU upload of a sprite bitmap on the main thread,
+// which owns the GL context. mainThreadTask is buffered deep enough (64k) that
+// a whole sff's uploads fit without the queuing thread having to drain.
+func (s *Sprite) uploadTexture(data []byte, w, h, depth int32, filter bool, trim [2][4]float32) {
 	sys.mainThreadTask <- func() {
-		defer texUploadPending.Add(-n)
 		tex, err := gfx.newTexture(w, h, depth, filter)
 		if err != nil {
 			LogMessage("[VRAM] uploadTexture newTexture failed: %v", err)
@@ -1995,9 +1977,11 @@ func loadSff(filename string, char bool, isMainThread bool, isActPal bool) (*Sff
 		return cached, nil
 	}
 	recording := sffCacheBegin()
-	if recording {
-		defer sffCacheDiscard() // clears the capture and spill on every error path
-	}
+	defer func() {
+		if recording { // an error path: the entry file being built goes
+			sffCacheDrop(sffCacheEnd())
+		}
+	}()
 
 	// Where fight-load time actually goes is invisible without this; a Pi
 	// spends seconds here and the log tells whether a cache would pay off.
@@ -2061,7 +2045,18 @@ func loadSff(filename string, char bool, isMainThread bool, isActPal bool) (*Sff
 					if loadingCanceled() {
 						continue // keep draining so the sender never blocks
 					}
-					if err := j.spr.decodeV2(j.data); err != nil {
+					err := func() (err error) {
+						// Not under SafeGo here: a corrupt sprite (LZ5 back
+						// reference out of range) must fail the load, not
+						// take the whole process down.
+						defer func() {
+							if r := recover(); r != nil {
+								err = Error(fmt.Sprintf("sprite %d,%d: %v", j.spr.Group, j.spr.Number, r))
+							}
+						}()
+						return j.spr.decodeV2(j.data)
+					}()
+					if err != nil {
 						decodeErrMu.Lock()
 						if decodeErr == nil {
 							decodeErr = err
@@ -2087,6 +2082,9 @@ func loadSff(filename string, char bool, isMainThread bool, isActPal bool) (*Sff
 		}
 		f.Seek(shofs, 0)
 		spriteList[i] = newSprite()
+		if recording {
+			sffCaptureExpect(spriteList[i])
+		}
 		var xofs, size uint32
 		var indexOfPrevious uint16
 		switch s.header.Version[0] {
@@ -2193,9 +2191,15 @@ func loadSff(filename string, char bool, isMainThread bool, isActPal bool) (*Sff
 
 	// Only files that actually cost something earn a cache entry; a fast sff
 	// would spend more time writing than it ever saves.
-	if recording && time.Since(start) > 200*time.Millisecond {
-		captured, spill := sffCacheEnd()
-		sffCacheStore(filename, char, isActPal, s, spriteList, cacheLinks, captured, spill)
+	if recording {
+		// Ended here, not by the deferred drop: by the time that runs another
+		// load may be recording, and it is that one it would end.
+		recording = false
+		if captured, spill := sffCacheEnd(); time.Since(start) > 200*time.Millisecond {
+			sffCacheStore(filename, char, isActPal, s, spriteList, cacheLinks, captured, spill)
+		} else {
+			sffCacheDrop(captured, spill)
+		}
 	}
 
 	return s, nil

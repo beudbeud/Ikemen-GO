@@ -5,10 +5,10 @@ import (
 	"strings"
 )
 
-// Hooks the libretro core installs into the engine. Both are zero in a normal
+// Hooks the libretro core installs into the engine. All are zero in a normal
 // standalone build, so `libretroPresent != nil` is the "am I a core?" test.
-// ponytail: two package vars instead of a platform interface; there is exactly
-// one alternate host and it only needs these two things.
+// ponytail: package vars instead of a platform interface; there is exactly
+// one alternate host.
 var (
 	// libretroPresent hands the finished frame to the frontend and blocks until
 	// the frontend asks for the next one. Called on the game thread.
@@ -18,10 +18,6 @@ var (
 	libretroPollInput func()
 	// libretroPads is how many virtual gamepads the frontend exposes.
 	libretroPads int
-	// libretroGLTid is the OS thread id of the game (GL) thread, 0 when unknown.
-	// A loader that must wait for that thread to drain its queue has to know
-	// whether it is that thread: the isMainThread flags are not reliable.
-	libretroGLTid int
 	// libretroLowRAM: the machine has under 3GiB (Recalbox recommends a 2GiB
 	// Pi 5); sprite detail Auto then loads HD packs at half definition.
 	libretroLowRAM bool
@@ -72,7 +68,8 @@ var (
 // libretroSpriteShrink divides sprite texture resolution at upload (0 or 1 =
 // off). Set once at content load, before any sprite exists. On a shared-memory
 // GPU every texture byte is a RAM byte, and a 720p HD pack's sprites do not
-// fit a 4GB board at full size; on a CRT-class output the loss is invisible.
+// fit a board under 3GiB at full size; on a CRT-class output the loss is
+// invisible.
 var libretroSpriteShrink int32
 
 // libretroShrinkIndexed extends the shrink to palette-indexed sprites. Off in
