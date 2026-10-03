@@ -78,8 +78,7 @@ func (r *Renderer_GLES32) newShaderProgram(vert, frag, geo, name string, crashWh
 		}
 	} else {
 		Logcat("GLES: Entering linkProgram...")
-		prog, err = r.linkProgram(vertObj, fragObj)
-		if err != nil {
+		if prog, err = r.linkProgram(vertObj, fragObj); chkEX(err, "Link program error on "+name+"\n", crashWhenFail) {
 			return nil, err
 		}
 	}
@@ -628,6 +627,9 @@ type Renderer_GLES32 struct {
 	// directFrame is set when BeginFrame pointed the renderer straight at
 	// presentFBO, so EndFrame has nothing left to copy.
 	directFrame bool
+	// spriteActive: the bound program is the sprite shader or one of its
+	// variants (kept by ChangeProgram), so its uniforms go through the caches.
+	spriteActive bool
 
 	// presentFBO is where the final pass lands: the window (0), or a texture
 	// the libretro core shares with its frontend.
@@ -862,7 +864,7 @@ func (r *Renderer_GLES32) Init() {
 		"alpha", "tint", "mask", "neg", "gray", "add", "mult", "isFlat", "isRgba", "isTrapez", "hue")
 	r.spriteShader.RegisterTextures("pal", "tex")
 
-	// The same shader with the blocks a draw cannot use compiled out. Both are
+	// The same shader with the blocks a draw cannot use compiled out. They are
 	// uniform branches that v3d flattens, so leaving them in costs every
 	// fragment whether or not the draw needs them. The uniforms a variant
 	// drops resolve to location -1, which the SetUniform* helpers already
@@ -1123,6 +1125,7 @@ func (r *Renderer_GLES32) Close() {
 func (r *Renderer_GLES32) InitStateCache() {
 	// Match standard OpenGL hardware defaults
 	r.program = 0
+	r.spriteActive = false
 	r.depthTest = false
 	r.depthMask = true
 	r.doubleSided = true
@@ -1187,17 +1190,21 @@ func (r *Renderer_GLES32) BeginFrame(clearColor bool) {
 	r.directFrame = r.presentFBO != 0 && sys.msaa == 0 &&
 		len(r.postShaderSelect) == 1 && len(r.customShaders) == 0 &&
 		x == 0 && y == 0 && vw == sys.scrrect[2] && vh == sys.scrrect[3]
-	if r.directFrame {
-		gl.BindFramebuffer(gl.FRAMEBUFFER, r.presentFBO)
-	} else {
-		gl.BindFramebuffer(gl.FRAMEBUFFER, r.fbo)
-	}
+	gl.BindFramebuffer(gl.FRAMEBUFFER, r.frameFBO())
 	gl.Viewport(0, 0, sys.scrrect[2], sys.scrrect[3])
 	if clearColor {
 		gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 	} else {
 		gl.Clear(gl.DEPTH_BUFFER_BIT)
 	}
+}
+
+// frameFBO is the framebuffer the scene is being drawn into this frame.
+func (r *Renderer_GLES32) frameFBO() uint32 {
+	if r.directFrame {
+		return r.presentFBO
+	}
+	return r.fbo
 }
 
 func (r *Renderer_GLES32) EndFrame() {
@@ -1419,6 +1426,7 @@ func (r *Renderer_GLES32) ChangeProgram(prog uint32) {
 	// Switch program
 	gl.UseProgram(prog)
 	r.program = prog
+	r.spriteActive = prog == r.spriteShader.program || r.isSpriteProgram(prog)
 
 	// Reset the texture cache
 	for i := range r.boundTex {
@@ -1623,7 +1631,7 @@ func (r *Renderer_GLES32) prepareModelPipeline(bufferIndex uint32, env *Environm
 	r.ChangeProgram(r.modelShader.program)
 
 	r.bindVertexArray(r.modelVAO)
-	gl.BindFramebuffer(gl.FRAMEBUFFER, r.fbo)
+	gl.BindFramebuffer(gl.FRAMEBUFFER, r.frameFBO())
 
 	gl.Viewport(0, 0, sys.scrrect[2], sys.scrrect[3])
 	r.SetDepthMask(true)
@@ -2021,7 +2029,7 @@ func (r *Renderer_GLES32) SetUniformISub(loc int32, val int32) {
 	}
 
 	// Cached path for the sprite shaders
-	if r.isSpriteProgram(r.program) {
+	if r.spriteActive {
 		key := (r.program << 16) | uint32(loc)
 		if old, exists := r.uniformICache[key]; exists && old == val {
 			return
@@ -2038,7 +2046,7 @@ func (r *Renderer_GLES32) SetUniformFSub(loc int32, values ...float32) {
 	}
 
 	// Cached path for the sprite shaders
-	if r.isSpriteProgram(r.program) {
+	if r.spriteActive {
 		key := (r.program << 16) | uint32(loc)
 
 		switch len(values) {
@@ -2251,7 +2259,7 @@ func (r *Renderer_GLES32) SetTextureSub(uMap map[string]int32, tMap map[string]i
 
 	// Cached path for the sprite shaders
 	// Note: The cache doesn't care if a texture is "tex" or "pal"
-	if r.isSpriteProgram(r.program) {
+	if r.spriteActive {
 		// Increment reference timer
 		r.texCacheTimer++
 
@@ -2415,6 +2423,7 @@ func (r *Renderer_GLES32) RenderQuadBatch(vertexCount int32) {
 		return
 	}
 	gl.DrawArrays(gl.TRIANGLE_STRIP, 0, vertexCount)
+	glesDrawCalls++
 }
 
 func (r *Renderer_GLES32) RenderElements(mode PrimitiveMode, count, offset int) {
@@ -2471,7 +2480,7 @@ func (r *Renderer_GLES32) RenderCubeMap(envTex Texture, cubeTex Texture) {
 	}
 
 	r.bindVertexArray(0)
-	gl.BindFramebuffer(gl.FRAMEBUFFER, r.fbo)
+	gl.BindFramebuffer(gl.FRAMEBUFFER, r.frameFBO())
 	// GenerateMipmap needs the texture actually active; reuses the unit "panorama" just used.
 	r.bindTextureToUnitForced(int32(unit), gl.TEXTURE_CUBE_MAP, cubeTexture, 0)
 	gl.GenerateMipmap(gl.TEXTURE_CUBE_MAP)
@@ -2520,7 +2529,7 @@ func (r *Renderer_GLES32) RenderFilteredCubeMap(distribution int32, cubeTex Text
 	}
 
 	r.bindVertexArray(0)
-	gl.BindFramebuffer(gl.FRAMEBUFFER, r.fbo)
+	gl.BindFramebuffer(gl.FRAMEBUFFER, r.frameFBO())
 }
 
 func (r *Renderer_GLES32) RenderLUT(distribution int32, cubeTex Texture, lutTex Texture, sampleCount int32) {
@@ -2566,7 +2575,7 @@ func (r *Renderer_GLES32) RenderLUT(distribution int32, cubeTex Texture, lutTex 
 	gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4)
 
 	r.bindVertexArray(0)
-	gl.BindFramebuffer(gl.FRAMEBUFFER, r.fbo)
+	gl.BindFramebuffer(gl.FRAMEBUFFER, r.frameFBO())
 }
 
 func (r *Renderer_GLES32) PerspectiveProjectionMatrix(angle, aspect, near, far float32) mgl.Mat4 {
@@ -2688,12 +2697,12 @@ func (r *Renderer_GLES32) NeedsGrabPass() bool {
 func (r *Renderer_GLES32) ResolveBackBuffer() Texture {
 	r.bindTextureToUnitForced(0, gl.TEXTURE_2D, r.grabTexture, 0)
 
-	gl.BindFramebuffer(gl.READ_FRAMEBUFFER, r.fbo)
+	gl.BindFramebuffer(gl.READ_FRAMEBUFFER, r.frameFBO())
 	gl.ReadBuffer(gl.COLOR_ATTACHMENT0)
 
 	gl.CopyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, r.grabTexture.width, r.grabTexture.height)
 
-	gl.BindFramebuffer(gl.FRAMEBUFFER, r.fbo)
+	gl.BindFramebuffer(gl.FRAMEBUFFER, r.frameFBO())
 	return r.grabTexture
 }
 

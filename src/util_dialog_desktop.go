@@ -1,4 +1,4 @@
-//go:build !raw && !android && !libretro
+//go:build !raw && !android && !ios && !libretro
 
 package main
 
@@ -9,7 +9,7 @@ import (
 // Message box implementation
 //
 // Split out of util_desktop.go so the libretro core keeps everything else in
-// that file (TTF fonts, renderer selection) without pulling in dialog, whose
+// that file (TTF fonts) without pulling in dialog, whose
 // cgo preamble needs GTK 3 -- a dependency an embedded frontend image should
 // not have to carry for two message boxes it can never show.
 func ShowInfoDialog(message, title string) {

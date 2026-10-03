@@ -319,6 +319,9 @@ func (w *Window) GetClipboardString() string {
 }
 
 func (w *Window) toggleFullscreen() {
+	if libretroPresent != nil {
+		return // the frontend owns the screen; a pack's Options menu still asks
+	}
 	if w.fullscreen {
 		w.Window.SetFullscreen(0)
 		w.Window.SetBordered(!sys.cfg.Video.Borderless)

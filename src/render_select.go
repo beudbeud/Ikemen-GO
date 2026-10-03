@@ -1,4 +1,4 @@
-//go:build !android && !gles
+//go:build !android && !ios && !gles
 
 package main
 
