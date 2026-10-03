@@ -296,6 +296,14 @@ func (r *Renderer_GLES32) generateTexture(width, height, depth int32, filter boo
 	return tex
 }
 
+// release deletes the texture now rather than at the next GC (GL thread):
+// lazyEvict needs the memory back when it decides to, and no longer holds it.
+func (t *Texture_GLES32) release() {
+	runtime.SetFinalizer(t, nil)
+	gl.DeleteTextures(1, &t.handle)
+	t.handle = 0
+}
+
 // Creates a generic texture
 func (r *Renderer_GLES32) newTexture(width, height, depth int32, filter bool) (Texture, error) {
 	t := r.generateTexture(width, height, depth, filter)

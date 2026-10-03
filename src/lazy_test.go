@@ -3,6 +3,7 @@ package main
 import (
 	"runtime"
 	"testing"
+	"weak"
 )
 
 func TestLazyQueue(t *testing.T) {
@@ -30,4 +31,35 @@ func TestLazyQueue(t *testing.T) {
 		t.Fatalf("veto: made %v retry %v, asked %d times", made, retry, vetoed)
 	}
 	runtime.KeepAlive(keep)
+}
+
+type fakeTex struct {
+	Texture
+	released bool
+}
+
+func (f *fakeTex) release() { f.released = true }
+
+func TestLazyEvict(t *testing.T) {
+	saved, savedFrame := lazyMade, sys.frameCounter
+	t.Cleanup(func() { lazyMade, sys.frameCounter = saved, savedFrame })
+	sys.frameCounter = 10000
+	mk := func(used int32) (*lazyTex, *fakeTex) {
+		f := &fakeTex{}
+		l := &lazyTex{w: 10, h: 10, depth: 32, tex: f, used: used, made: true}
+		lazyMade = append(lazyMade, weak.Make(l))
+		return l, f
+	}
+	lazyMade = nil
+	oldest, f1 := mk(100)
+	older, f2 := mk(200)
+	recent, f3 := mk(9900) // drawn less than 10s ago: kept whatever the need
+	lazyEvict(1)           // one 10x10x4 texture covers it
+	if !f1.released || oldest.tex != nil || f2.released || older.tex == nil {
+		t.Fatalf("want only the least recently drawn evicted: %v %v", f1.released, f2.released)
+	}
+	lazyEvict(1 << 30)
+	if !f2.released || f3.released || recent.tex == nil {
+		t.Fatalf("recent texture evicted, or idle one kept: %v %v", f2.released, f3.released)
+	}
 }

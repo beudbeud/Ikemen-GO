@@ -696,13 +696,15 @@ func (s *Sprite) isBlank() bool {
 // never shown (2.2GiB of GPU memory -- which is system RAM on a Pi -- for
 // Ultimate Cosmos at 720p), while a texture made on demand costs ~1ms once.
 type lazyTex struct {
-	data   []byte // texels, sliced out of keep
+	data   []byte // texels, sliced out of keep; kept to remake an evicted texture
 	keep   *fileMapping
 	w, h   int32
 	depth  int32
 	filter bool
 	tex    Texture
 	trim   [2][4]float32
+	used   int32       // sys.frameCounter of the last draw, for lazyEvict
+	made   bool        // listed in lazyMade
 	warm   atomic.Bool // texels read in once off the GL thread (lazyEnqueue)
 	// warmTrim is computed by the warming goroutine, valid once warm is set:
 	// scanning the texels costs as much as uploading them.
@@ -710,27 +712,27 @@ type lazyTex struct {
 }
 
 // texture returns the sprite's texture, making it first if it was left lazy.
-// GL thread only: that is where every draw happens.
+// GL thread only: that is where every draw happens. A lazy sprite never
+// holds its texture itself, so that lazyEvict can take it back.
 func (s *Sprite) texture() Texture {
-	if s.Tex == nil && s.lazy != nil {
-		l := s.lazy
+	if s.lazy == nil {
+		return s.Tex
+	}
+	l := s.lazy
+	if l.tex == nil {
 		t0 := time.Now()
-		fresh := l.tex == nil
-		ok := l.make()
-		if fresh {
-			lazyDemandN++
-			lazyDemandT += time.Since(t0)
-		}
-		if !ok {
-			s.lazy = nil
+		if !l.make() {
 			return nil
 		}
-		s.Tex, s.trim = l.tex, l.trim
+		lazyDemandN++
+		lazyDemandT += time.Since(t0)
 		if libretroFill != nil {
-			libretroFillSprites[s.Tex] = s
+			libretroFillSprites[l.tex] = s
 		}
 	}
-	return s.Tex
+	l.used = sys.frameCounter
+	s.trim = l.trim
+	return l.tex
 }
 
 // make creates the texture if it is not there yet (GL thread only); false
@@ -745,20 +747,63 @@ func (l *lazyTex) make() bool {
 	tex, err := gfx.newTexture(l.w, l.h, l.depth, l.filter)
 	if err != nil {
 		LogMessage("[VRAM] lazy newTexture failed: %v", err)
+		lazyQueue.Lock() // a warming goroutine may be reading them
 		l.data, l.keep = nil, nil
+		lazyQueue.Unlock()
 		return false
 	}
 	tex.SetData(l.data)
-	l.tex = tex
-	if l.warm.Load() {
-		l.trim = l.warmTrim
-	} else {
-		l.trim = spriteTrims(l.data, l.w, l.h, l.depth)
+	if l.tex = tex; !l.made {
+		l.made = true
+		if l.warm.Load() {
+			l.trim = l.warmTrim
+		} else {
+			l.trim = spriteTrims(l.data, l.w, l.h, l.depth)
+		}
+		lazyMade = append(lazyMade, weak.Make(l))
 	}
-	lazyQueue.Lock()          // a warming goroutine may be reading them
-	l.data, l.keep = nil, nil // the mapping can go once all are made
-	lazyQueue.Unlock()
+	l.used = sys.frameCounter
 	return true
+}
+
+// lazyMade lists the lazy textures made so far (GL thread only).
+var lazyMade []weak.Pointer[lazyTex]
+
+// lazyEvict frees, least recently drawn first, lazy textures not drawn for
+// 10s until about over bytes are given back (GL thread only). Without it GPU
+// memory -- system RAM on a Pi -- only grows over a session: every sprite
+// drawn once keeps its texture. An evicted sprite is remade from its mapped
+// texels (1-5ms) if it shows again.
+func lazyEvict(over int64) {
+	idle := sys.frameCounter - 600
+	var old []*lazyTex
+	live := lazyMade[:0]
+	for _, w := range lazyMade {
+		l := w.Value()
+		if l == nil {
+			continue
+		}
+		live = append(live, w)
+		if l.tex != nil && l.used < idle {
+			old = append(old, l)
+		}
+	}
+	lazyMade = live
+	sort.Slice(old, func(i, j int) bool { return old[i].used < old[j].used })
+	for _, l := range old {
+		if over <= 0 {
+			break
+		}
+		bpp := int64(4)
+		if l.depth <= 8 {
+			bpp = 1
+		}
+		over -= int64(l.w) * int64(l.h) * bpp
+		if r, ok := l.tex.(interface{ release() }); ok {
+			r.release()
+		}
+		l.tex = nil
+	}
 }
 
 // lazyQueue lists textures still to make, in the order to prefetch them.
@@ -1722,7 +1767,8 @@ func (s *Sprite) CachePalTex(pal []uint32) Texture {
 }
 
 func (s *Sprite) Draw(x, y, xscale, yscale float32, rxadd float32, rot Rotation, projectionMode int32, fLength float32, fx *PalFX, window *[4]int32) {
-	if s.texture() == nil {
+	tex := s.texture()
+	if tex == nil {
 		return
 	}
 
@@ -1744,7 +1790,7 @@ func (s *Sprite) Draw(x, y, xscale, yscale float32, rxadd float32, rot Rotation,
 	}
 
 	rp := RenderParams{
-		tex:            s.Tex,
+		tex:            tex,
 		paltex:         s.PalTex,
 		size:           s.Size,
 		x:              -x * sys.widthScale,

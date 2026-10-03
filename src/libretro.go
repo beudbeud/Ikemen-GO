@@ -439,6 +439,7 @@ func libretroPresentFrame() {
 	}
 	lr.readyOnce.Do(func() { close(lr.ready) })
 
+	libretroGPUOK() // samples GPU memory once a second, evicting past the cap
 	if !libretroPrefetch(func() bool {
 		select {
 		case lr.frameDone <- struct{}{}:
@@ -852,10 +853,15 @@ func libretroPrefetch(try func() bool) bool {
 }
 
 // libretroGPUOK is lazyGPUOK for the core: GPU memory, as the kernel reports
-// it once a second, below a quarter of the RAM. Unknown: no cap.
+// it once a second, below a quarter of the RAM (Recalbox recommends a 2GiB
+// Pi 5: 512MiB). Unknown: no cap. Each reading over the cap evicts.
 func libretroGPUOK() bool {
 	if lr.gpuCap == 0 {
 		lr.gpuCap = libretroMemTotal() / 4
+		// IKEMEN_GPU_CAP_MB sets it directly: simulating a smaller board.
+		if mb, err := strconv.Atoi(os.Getenv("IKEMEN_GPU_CAP_MB")); err == nil && mb > 0 {
+			lr.gpuCap = int64(mb) << 20
+		}
 		if lr.gpuCap <= 0 {
 			lr.gpuCap = -1
 		}
@@ -865,6 +871,11 @@ func libretroGPUOK() bool {
 	}
 	if time.Since(lr.gpuAt) > time.Second {
 		lr.gpuAt, lr.gpuUsed = time.Now(), libretroGPUBytes()
+		// Prefetch stops at the cap, but sprites drawn on demand past it
+		// keep adding: give back what has not been drawn for a while.
+		if lr.gpuUsed > lr.gpuCap {
+			lazyEvict(lr.gpuUsed - lr.gpuCap)
+		}
 	}
 	return lr.gpuUsed < lr.gpuCap
 }
