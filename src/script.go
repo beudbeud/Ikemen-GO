@@ -4258,6 +4258,10 @@ func systemScriptInit(l *lua.LState) {
 		/*Check whether resources are currently being loaded.
 		@function loading
 		@treturn boolean loading `true` if the loader is in `LS_Loading` state.*/
+		// Scripts spin on this (`while loading() do end`) on the GL thread:
+		// keep the loader's texture uploads moving, or a throttled loader
+		// waits for a queue nobody drains.
+		sys.runMainThreadTask()
 		l.Push(lua.LBool(sys.loader.state == LS_Loading))
 		return 1
 	})
@@ -5428,6 +5432,7 @@ func systemScriptInit(l *lua.LState) {
 		/*Check whether resources are currently being preloaded.
 		@function preloading
 		@treturn boolean `true` if assets are still being preloaded.*/
+		sys.runMainThreadTask() // same reason as loading()
 		l.Push(lua.LBool(!sys.sel.AllPreloadsReady()))
 		return 1
 	})

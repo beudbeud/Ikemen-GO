@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -904,6 +905,10 @@ func (s *Sprite) SetRaw(data []byte, sprWidth int32, sprHeight int32, sprDepth i
 // uploadTexture queues the GPU upload of a sprite bitmap on the main thread,
 // which owns the GL context. mainThreadTask is buffered deep enough (64k) that
 // a whole sff's uploads fit without the queuing thread having to drain.
+// texUploadPending is the pixel bytes queued in sys.mainThreadTask and not
+// yet handed to the GPU: the heap a loader is holding on the GL thread's behalf.
+var texUploadPending atomic.Int64
+
 func (s *Sprite) uploadTexture(data []byte, w, h, depth int32, filter bool) {
 	var trim [2][4]float32
 	switch depth {
@@ -915,7 +920,10 @@ func (s *Sprite) uploadTexture(data []byte, w, h, depth int32, filter bool) {
 		trim[0] = spriteTrim(data, w, h, 4, 4)
 		trim[1] = spriteTrim(data, w, h, 4, 3)
 	}
+	n := int64(len(data))
+	texUploadPending.Add(n)
 	sys.mainThreadTask <- func() {
+		defer texUploadPending.Add(-n)
 		tex, err := gfx.newTexture(w, h, depth, filter)
 		if err != nil {
 			LogMessage("[VRAM] uploadTexture newTexture failed: %v", err)

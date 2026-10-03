@@ -18,6 +18,10 @@ var (
 	libretroPollInput func()
 	// libretroPads is how many virtual gamepads the frontend exposes.
 	libretroPads int
+	// libretroGLTid is the OS thread id of the game (GL) thread, 0 when unknown.
+	// A loader that must wait for that thread to drain its queue has to know
+	// whether it is that thread: the isMainThread flags are not reliable.
+	libretroGLTid int
 	// libretroExit replaces os.Exit: a core may not kill the frontend process.
 	libretroExit func()
 	// libretroRumble replaces SDL rumble: the frontend owns the physical pads,

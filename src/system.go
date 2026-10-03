@@ -1178,6 +1178,10 @@ func (s *System) dropCanceledLoadData() {
 		}
 	}
 drained:
+	// The dropped uploads never ran their decrement.
+	// ponytail: a task queued between the drain and this reset makes the count
+	// drift low (the throttle loosens), never high; good enough for a budget.
+	texUploadPending.Store(0)
 	s.loadMutex.Lock()
 	defer s.loadMutex.Unlock()
 

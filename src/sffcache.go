@@ -396,6 +396,34 @@ func (r *sfcReader) u32s(n int) []uint32 {
 
 // sffCacheLoad returns the cached Sff, or nil on miss/staleness/corruption.
 // Texture uploads are queued on the main thread exactly like a normal load.
+// sffCacheThrottle keeps a cache load from queueing a whole file's pixels for
+// the GL thread at once: reading is far faster than uploading, so the heap
+// held ~280MiB (fightfx, an HD character) before the queue drained. Past the
+// budget the GL thread drains its own queue; any other loader waits for it.
+//
+// A GL thread that never drains while waiting (some script loop) must not
+// hang the load: after a second without progress the throttle gives up and
+// the load proceeds unthrottled, as it did before.
+func sffCacheThrottle() {
+	const budget = 32 << 20
+	last, since := texUploadPending.Load(), time.Now()
+	for p := last; p > budget; p = texUploadPending.Load() {
+		if libretroGLTid == 0 || loadingCanceled() {
+			return
+		}
+		if gettid() == libretroGLTid {
+			sys.runMainThreadTask()
+			return
+		}
+		if p < last {
+			last, since = p, time.Now()
+		} else if time.Since(since) > time.Second {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func sffCacheLoad(filename string, char, isActPal bool) *Sff {
 	if libretroPresent == nil {
 		return nil
@@ -500,6 +528,7 @@ func sffCacheLoad(filename string, char, isActPal bool) *Sff {
 				filter = sys.cfg.Video.RGBSpriteBilinearFilter
 			}
 			spr.uploadTexture(data, w, h, depth, filter)
+			sffCacheThrottle()
 		case 2:
 			links = append(links, link{i, int(r.i32())})
 		}

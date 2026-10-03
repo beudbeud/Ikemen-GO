@@ -258,6 +258,7 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	bootStart := time.Now()
 	go func() {
 		runtime.LockOSThread()
+		libretroGLTid = gettid()
 		realMain()
 	}()
 
