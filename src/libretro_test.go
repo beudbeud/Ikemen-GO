@@ -422,6 +422,32 @@ func TestLibretroQueueRumble(t *testing.T) {
 	lr.rumble[1].Store(0)
 }
 
+// A pack's config.ini in the old numeric joystick format (Ultimate Cosmos
+// ships one) must not reach the live input tables: they are built inside
+// loadConfig, so the core's forced mapping has to be applied before that.
+func TestLibretroForceInputReachesLiveTables(t *testing.T) {
+	initLUTs()
+	path := filepath.Join(t.TempDir(), "config.ini")
+	pack := "[Config]\nPlayers = 4\n[Joystick_P1]\nJoystick = 0\nUp = 10\nA = 0\nB = 1\nStart = 7\nMenu = 6\n"
+	if err := os.WriteFile(path, []byte(pack), 0644); err != nil {
+		t.Fatal(err)
+	}
+	saved := libretroConfigOverride
+	defer func() { libretroConfigOverride = saved }()
+	libretroConfigOverride = nil
+	libretroForceInput()
+	sys.keyConfig, sys.joystickConfig = nil, nil
+	if _, err := loadConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	j := sys.joystickConfig[0]
+	for name, got := range map[string]int{"DP_U": j.dU, "A": j.bA, "B": j.bB, "START": j.bS, "BACK": j.bM} {
+		if want := StringToButtonLUT[name]; got != want {
+			t.Errorf("%s: live button %d, want %d", name, got, want)
+		}
+	}
+}
+
 func TestLibretroEnvArgs(t *testing.T) {
 	t.Setenv("IKEMEN_ARGS", "-p1 Kfm -p2 Kfm -s stages/kfm.def -p1.ai 8 -nosound")
 	sys.cmdFlags = nil

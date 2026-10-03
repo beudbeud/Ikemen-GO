@@ -202,9 +202,6 @@ func realMain() {
 	if runtime.GOOS == "ios" {
 		cfg.Video.RenderMode = "Vulkan 1.3"
 	}
-	if libretroConfigOverride != nil {
-		libretroConfigOverride(cfg)
-	}
 	sys.cfg = *cfg
 	// Logcat("LOG: Config Loaded. System Script: " + sys.cfg.Config.System)
 

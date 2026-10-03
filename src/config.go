@@ -317,6 +317,11 @@ func loadConfig(def string) (*Config, error) {
 	c.IniFile = iniFile
 	c.DefaultOnlyIni = defaultOnlyIni
 	c.normalize()
+	// Before sysSet: it builds the live key/joystick tables and the game size
+	// from the struct, so a core override applied later never reaches them.
+	if libretroConfigOverride != nil {
+		libretroConfigOverride(&c)
+	}
 	c.sysSet()
 	c.Save(def)
 	return &c, nil
