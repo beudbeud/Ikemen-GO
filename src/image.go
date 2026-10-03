@@ -12,11 +12,13 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
+	"weak"
 )
 
 type TransType int32
@@ -701,6 +703,7 @@ type lazyTex struct {
 	filter bool
 	tex    Texture
 	trim   [2][4]float32
+	warm   atomic.Bool // texels read in once off the GL thread (lazyEnqueue)
 }
 
 // texture returns the sprite's texture, making it first if it was left lazy.
@@ -708,23 +711,111 @@ type lazyTex struct {
 func (s *Sprite) texture() Texture {
 	if s.Tex == nil && s.lazy != nil {
 		l := s.lazy
-		if l.tex == nil {
-			tex, err := gfx.newTexture(l.w, l.h, l.depth, l.filter)
-			if err != nil {
-				LogMessage("[VRAM] lazy newTexture failed: %v", err)
-				s.lazy = nil
-				return nil
-			}
-			tex.SetData(l.data)
-			l.tex, l.trim = tex, spriteTrims(l.data, l.w, l.h, l.depth)
-			l.data, l.keep = nil, nil // the mapping can go once all are made
-			if libretroFill != nil {
-				libretroFillSprites[tex] = s
-			}
+		if !l.make() {
+			s.lazy = nil
+			return nil
 		}
 		s.Tex, s.trim = l.tex, l.trim
+		if libretroFill != nil {
+			libretroFillSprites[s.Tex] = s
+		}
 	}
 	return s.Tex
+}
+
+// make creates the texture if it is not there yet (GL thread only); false
+// when it cannot be had.
+func (l *lazyTex) make() bool {
+	if l.tex != nil {
+		return true
+	}
+	if l.data == nil {
+		return false
+	}
+	tex, err := gfx.newTexture(l.w, l.h, l.depth, l.filter)
+	if err != nil {
+		LogMessage("[VRAM] lazy newTexture failed: %v", err)
+		l.data, l.keep = nil, nil
+		return false
+	}
+	tex.SetData(l.data)
+	l.tex, l.trim = tex, spriteTrims(l.data, l.w, l.h, l.depth)
+	lazyQueue.Lock()          // a warming goroutine may be reading them
+	l.data, l.keep = nil, nil // the mapping can go once all are made
+	lazyQueue.Unlock()
+	return true
+}
+
+// lazyQueue lists textures still to make, in the order to prefetch them.
+// Weak: a sprite whose Sff was dropped must not be made, nor kept alive.
+var lazyQueue struct {
+	sync.Mutex
+	q []weak.Pointer[lazyTex]
+}
+
+// lazyEnqueue adds the lazy textures of one loaded file, lowest sprite
+// groups first: stance, intros and basic moves come before effects.
+func lazyEnqueue(sprites []*Sprite) {
+	sort.SliceStable(sprites, func(i, j int) bool {
+		return sprites[i].Group < sprites[j].Group ||
+			sprites[i].Group == sprites[j].Group && sprites[i].Number < sprites[j].Number
+	})
+	ws := make([]weak.Pointer[lazyTex], len(sprites))
+	for i, spr := range sprites {
+		ws[i] = weak.Make(spr.lazy)
+	}
+	lazyQueue.Lock()
+	lazyQueue.q = append(lazyQueue.q, ws...)
+	lazyQueue.Unlock()
+	// Read the texels in, in prefetch order, so that making a prefetched
+	// texture on the GL thread never waits on the disk.
+	go func() {
+		for _, w := range ws {
+			l := w.Value()
+			if l == nil {
+				continue
+			}
+			lazyQueue.Lock()
+			data, keep := l.data, l.keep
+			lazyQueue.Unlock()
+			var sum byte
+			for i := 0; i < len(data); i += 4096 {
+				sum += data[i]
+			}
+			runtime.KeepAlive(keep)
+			lazyWarmSink.Add(uint32(sum))
+			l.warm.Store(true)
+		}
+	}()
+}
+
+// lazyWarmSink keeps the page-touching loop from being optimised away.
+var lazyWarmSink atomic.Uint32
+
+// lazyPrefetchOne makes the next queued texture that is still wanted, unless
+// ok vetoes it (GPU memory cap). False when there is nothing (more) to do.
+func lazyPrefetchOne(ok func() bool) bool {
+	for {
+		lazyQueue.Lock()
+		if len(lazyQueue.q) == 0 {
+			lazyQueue.Unlock()
+			return false
+		}
+		l := lazyQueue.q[0].Value()
+		if l == nil || l.tex != nil || l.data == nil {
+			lazyQueue.q = lazyQueue.q[1:]
+			lazyQueue.Unlock()
+			continue
+		}
+		if !l.warm.Load() || !ok() {
+			lazyQueue.Unlock()
+			return false
+		}
+		lazyQueue.q = lazyQueue.q[1:]
+		lazyQueue.Unlock()
+		l.make()
+		return true
+	}
 }
 
 func newSprite() *Sprite {

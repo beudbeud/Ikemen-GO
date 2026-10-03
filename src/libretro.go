@@ -71,7 +71,10 @@ var lr struct {
 	warnedHW      bool              // the hardware path failed and the player was told
 
 	stallStart time.Time // first missed frame of the current stall (retro thread only)
-	stallShown int64     // last whole second a loading message was shown for
+	gpuCap     int64     // libretroPrefetch's GPU memory ceiling, -1 for none
+	gpuUsed    int64     // last libretroGPUBytes reading, taken at gpuAt
+	gpuAt      time.Time
+	stallShown int64 // last whole second a loading message was shown for
 
 	speaker  *LibretroSpeaker
 	audioAcc float64
@@ -426,7 +429,16 @@ func libretroPresentFrame() {
 	}
 	lr.readyOnce.Do(func() { close(lr.ready) })
 
-	lr.frameDone <- struct{}{}
+	if !libretroPrefetch(func() bool {
+		select {
+		case lr.frameDone <- struct{}{}:
+			return true
+		default:
+			return false
+		}
+	}) {
+		lr.frameDone <- struct{}{}
+	}
 	<-lr.frameReq
 	lr.st.reqAt = time.Now()
 }
@@ -761,24 +773,87 @@ func libretroDefaultMemoryLimit() {
 	if os.Getenv("GOMEMLIMIT") != "" {
 		return
 	}
-	b, err := os.ReadFile("/proc/meminfo") // Linux only; elsewhere keep the default
+	if total := libretroMemTotal(); total > 0 {
+		limit := Clamp(total/2, 1<<30, 3<<30)
+		debug.SetMemoryLimit(limit)
+		fmt.Fprintf(os.Stderr, "Ikemen GO: GC memory limit %dMiB\n", limit>>20)
+	}
+}
+
+// libretroMemTotal is the machine's RAM in bytes, 0 when unknown (non-Linux).
+func libretroMemTotal() int64 {
+	b, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
-		return
+		return 0
 	}
 	for _, line := range strings.Split(string(b), "\n") {
-		v, ok := strings.CutPrefix(line, "MemTotal:")
-		if !ok {
+		if v, ok := strings.CutPrefix(line, "MemTotal:"); ok {
+			if f := strings.Fields(v); len(f) > 0 {
+				if kb, err := strconv.ParseInt(f[0], 10, 64); err == nil {
+					return kb * 1024
+				}
+			}
+			break
+		}
+	}
+	return 0
+}
+
+// libretroGPUBytes is the GPU memory this process holds, as the kernel's DRM
+// fdinfo reports it (Linux 6.x; on a Pi it is system RAM), 0 when unknown.
+func libretroGPUBytes() int64 {
+	fds, _ := os.ReadDir("/proc/self/fdinfo")
+	var most int64
+	for _, fd := range fds {
+		b, err := os.ReadFile("/proc/self/fdinfo/" + fd.Name())
+		if err != nil {
 			continue
 		}
-		if f := strings.Fields(v); len(f) > 0 {
-			if kb, err := strconv.ParseInt(f[0], 10, 64); err == nil && kb > 0 {
-				limit := Clamp(kb*1024/2, 1<<30, 3<<30)
-				debug.SetMemoryLimit(limit)
-				fmt.Fprintf(os.Stderr, "Ikemen GO: GC memory limit %dMiB\n", limit>>20)
+		for _, line := range strings.Split(string(b), "\n") {
+			if v, ok := strings.CutPrefix(line, "drm-total-memory:"); ok {
+				if f := strings.Fields(v); len(f) > 0 {
+					if kb, err := strconv.ParseInt(f[0], 10, 64); err == nil {
+						most = max(most, kb*1024)
+					}
+				}
 			}
 		}
-		return
 	}
+	return most
+}
+
+// libretroPrefetch makes queued lazy textures in the game thread's idle time:
+// a frame takes ~3ms to compute, then the thread waits ~12ms for retro_run to
+// take it. try attempts that hand-over; between attempts one texture is made,
+// so effects seldom wait for their textures when they first show. Nothing is
+// started past 8ms after the frame was asked for, so retro_run is not kept
+// waiting, and GPU memory stops at a quarter of the RAM (1GiB on a 4GiB Pi):
+// past that, sprites stay on demand. True when try succeeded.
+func libretroPrefetch(try func() bool) bool {
+	if lr.gpuCap == 0 {
+		lr.gpuCap = libretroMemTotal() / 4
+		if lr.gpuCap <= 0 {
+			lr.gpuCap = -1 // unknown: no cap
+		}
+	}
+	ok := func() bool {
+		if lr.gpuCap < 0 {
+			return true
+		}
+		if time.Since(lr.gpuAt) > time.Second {
+			lr.gpuAt, lr.gpuUsed = time.Now(), libretroGPUBytes()
+		}
+		return lr.gpuUsed < lr.gpuCap
+	}
+	for !lr.st.reqAt.IsZero() && time.Since(lr.st.reqAt) < 8*time.Millisecond {
+		if try() {
+			return true
+		}
+		if !lazyPrefetchOne(ok) {
+			break
+		}
+	}
+	return false
 }
 
 // libretroLogMemory prints the Go heap next to the process RSS: their gap is

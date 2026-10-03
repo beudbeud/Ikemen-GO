@@ -519,6 +519,7 @@ func sffCacheLoad(filename string, char, isActPal bool) *Sff {
 		return drop()
 	}
 	list := make([]*Sprite, ns)
+	var lazies []*Sprite
 	type link struct{ dst, src int }
 	var links []link
 	for i := 0; i < ns; i++ {
@@ -552,6 +553,7 @@ func sffCacheLoad(filename string, char, isActPal bool) *Sff {
 			}
 			if m != nil {
 				spr.lazy = &lazyTex{data: data, keep: m, w: w, h: h, depth: depth, filter: filter}
+				lazies = append(lazies, spr)
 			} else {
 				spr.uploadTexture(data, w, h, depth, filter)
 				sffCacheThrottle()
@@ -586,6 +588,7 @@ func sffCacheLoad(filename string, char, isActPal bool) *Sff {
 	if r.err {
 		return drop()
 	}
+	lazyEnqueue(lazies)
 	now := time.Now()
 	os.Chtimes(path, now, now) // eviction order is last use, not creation
 	fmt.Fprintf(os.Stderr, "Ikemen GO: sff %s: %d sprites from cache in %dms\n",
