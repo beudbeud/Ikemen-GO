@@ -9,7 +9,6 @@ import (
 	"math"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/ikemen-engine/beep/v2"
@@ -723,8 +722,6 @@ type Sound struct {
 	format  beep.Format
 	length  int
 	mapping *fileMapping // non-nil when wavData points into it
-	check   sync.Once    // full playthrough check, see playable
-	bad     bool
 }
 
 // fileMapping owns a memory-mapped file (see mmapFile); it is unmapped by a
@@ -749,18 +746,38 @@ type mappedFile struct {
 
 func (mappedFile) Close() error { return nil }
 
-// sndChecks counts the background wave checks still running (LoadSndFiltered).
-var sndChecks sync.WaitGroup
+// safeStreamer plays a wave that was not decoded through at load (a mapped
+// one: checking it reads the whole bank off the disk, 180MiB for Ultimate
+// Cosmos, which a 2GiB board cannot keep cached). A decoder panic or error
+// ends that sound instead of taking the mixer down.
+type safeStreamer struct {
+	beep.StreamSeeker
+	dead bool
+}
 
-// sndWaitChecks waits up to d for them: a match's first sounds (intro voices)
-// would otherwise be checked on the GL thread when first played, 110ms each.
-func sndWaitChecks(d time.Duration) {
-	done := make(chan struct{})
-	go func() { sndChecks.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(d):
+func (s *safeStreamer) Stream(samples [][2]float64) (n int, ok bool) {
+	if s.dead {
+		return 0, false
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.dead, n, ok = true, 0, false
+		}
+	}()
+	n, ok = s.StreamSeeker.Stream(samples)
+	if !ok && s.StreamSeeker.Err() != nil {
+		s.dead = true
+	}
+	return n, ok
+}
+
+func (s *safeStreamer) Seek(p int) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.dead, err = true, fmt.Errorf("wav seek: %v", r)
+		}
+	}()
+	return s.StreamSeeker.Seek(p)
 }
 
 func readSound(f io.ReadSeekCloser, size uint32, m *fileMapping) (*Sound, error) {
@@ -786,31 +803,12 @@ func readSound(f io.ReadSeekCloser, size uint32, m *fileMapping) (*Sound, error)
 	if err != nil {
 		return nil, err
 	}
-	snd := &Sound{wavData: wavData, format: wavfmt, length: s.Len(), mapping: m}
-	// A mapped wave is checked later (see LoadSndFiltered): checking it here
-	// reads the whole bank off the disk before the game can show anything.
-	if m == nil && !snd.playable() {
+	// A mapped wave is played through a safeStreamer instead (GetStreamer).
+	if m == nil && !wavPlaysThrough(wavData) {
 		return nil, nil // If sound wasn't able to be fully played, we disable it to avoid engine freezing
 	}
-	return snd, nil
+	return &Sound{wavData: wavData, format: wavfmt, length: s.Len(), mapping: m}, nil
 }
-
-// playable reports whether the wave decodes to its end, checking it once.
-func (s *Sound) playable() bool {
-	s.check.Do(func() {
-		t0 := time.Now()
-		s.bad = !wavPlaysThrough(s.wavData)
-		if libretroGLTid != 0 && gettid() == libretroGLTid {
-			sndCheckN.Add(1)
-			sndCheckT.Add(int64(time.Since(t0)))
-		}
-	})
-	return !s.bad
-}
-
-// sndCheckN/T count the checks done on the GL thread, for the slow-frame
-// log (IKEMEN_PROFILE).
-var sndCheckN, sndCheckT atomic.Int64
 
 // wavPlaysThrough decodes a whole wave and catches any panic: a sound that
 // can't be fully played would freeze the engine.
@@ -851,7 +849,10 @@ func wavPlaysThrough(wavData []byte) bool {
 
 func (s *Sound) GetStreamer() beep.StreamSeeker {
 	streamer, _, _ := wav.Decode(sndReader{bytes.NewReader(s.wavData), s.mapping})
-	return streamer
+	if streamer == nil {
+		return nil
+	}
+	return &safeStreamer{StreamSeeker: streamer}
 }
 
 // ------------------------------------------------------------------
@@ -991,23 +992,13 @@ func LoadSndFiltered(filename string, keepItem func([2]int32) bool, max uint32) 
 		subHeaderOffset = nextSubHeaderOffset
 	}
 	if m != nil {
-		// Check the mapped waves off the loading path, while the game is
-		// already running; one played before its turn is checked by Play.
-		sounds := make([]*Sound, 0, len(s.table))
-		for _, so := range s.table {
-			if so != nil {
-				sounds = append(sounds, so)
-			}
-		}
-		sndChecks.Add(1)
+		// Read the bank in off the GL thread: mixing runs on the frontend's
+		// thread under the speaker lock, and a wave first played from a cold
+		// USB stick faulted there for ~60ms -- stalling retro_run, and Play
+		// waiting on that lock.
 		go func() {
 			lowPriority()
-			defer sndChecks.Done()
-			for _, so := range sounds {
-				if !so.playable() {
-					fmt.Fprintf(os.Stderr, "WARNING: a sound in %v is corrupted and can't be played, so it was disabled\n", filename)
-				}
-			}
+			populate(m.data)
 		}()
 	}
 	return s, nil
@@ -1149,8 +1140,17 @@ func (s *SoundChannel) Reset() {
 }
 
 func (s *SoundChannel) Play(sound *Sound, group, number, loop int32, freqmul float32, loopStart, loopEnd, startPosition int) {
-	if sound == nil || !sound.playable() {
+	if sound == nil {
 		return
+	}
+	// A mapped wave moves to the heap the first time it plays. Mixing runs
+	// under the speaker lock: on a 2GiB board the page cache drops bank
+	// pages, and refetching them from USB there kept Play (and the game
+	// thread) waiting 70-165ms. Only played waves are copied -- tens of MiB,
+	// not the whole bank.
+	if sound.mapping != nil {
+		sound.wavData = append([]byte(nil), sound.wavData...)
+		sound.mapping = nil
 	}
 
 	s.sound = sound

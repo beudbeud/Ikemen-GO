@@ -53,8 +53,10 @@ func TestLazyEvict(t *testing.T) {
 	lazyMade = nil
 	oldest, f1 := mk(100)
 	older, f2 := mk(200)
-	recent, f3 := mk(9900) // drawn less than 10s ago: kept whatever the need
-	lazyEvict(1)           // one 10x10x4 texture covers it
+	recent, f3 := mk(9900)           // drawn less than 10s ago: kept whatever the need
+	if n := lazyEvict(1); n != 400 { // one 10x10x4 texture covers it
+		t.Fatalf("freed %d bytes, want 400", n)
+	}
 	if !f1.released || oldest.tex != nil || f2.released || older.tex == nil {
 		t.Fatalf("want only the least recently drawn evicted: %v %v", f1.released, f2.released)
 	}

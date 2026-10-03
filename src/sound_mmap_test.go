@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"github.com/ikemen-engine/beep/v2"
 	"os"
 	"path/filepath"
 	"testing"
@@ -56,9 +57,6 @@ func TestSndMmap(t *testing.T) {
 	if so == nil || so.mapping == nil {
 		t.Fatalf("sound not read from the mapping: %+v", so)
 	}
-	if !so.playable() {
-		t.Fatal("mapped wave deferred its check and then failed it")
-	}
 	if !bytes.Equal(so.wavData, wav.Bytes()) {
 		t.Fatal("mapped wave differs from the file's")
 	}
@@ -66,5 +64,22 @@ func TestSndMmap(t *testing.T) {
 	n, _ := so.GetStreamer().Stream(buf[:])
 	if n != 200 || buf[1][0] == 0 || buf[1][0] != buf[1][1] {
 		t.Fatalf("decoded %d samples, sample 1 = %v", n, buf[1])
+	}
+}
+
+type panicStreamer struct{ beep.StreamSeeker }
+
+func (panicStreamer) Stream([][2]float64) (int, bool) { panic("corrupt wave") }
+
+// A mapped wave is not checked at load: a decoder panic must end the sound,
+// not the mixer.
+func TestSafeStreamer(t *testing.T) {
+	s := &safeStreamer{StreamSeeker: panicStreamer{}}
+	var buf [8][2]float64
+	if n, ok := s.Stream(buf[:]); n != 0 || ok || !s.dead {
+		t.Fatalf("got %d %v dead=%v", n, ok, s.dead)
+	}
+	if _, ok := s.Stream(buf[:]); ok {
+		t.Fatal("dead stream played again")
 	}
 }

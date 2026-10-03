@@ -29,11 +29,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"runtime/metrics"
 	"runtime/pprof"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -74,7 +76,9 @@ var lr struct {
 	gpuCap     int64     // libretroPrefetch's GPU memory ceiling, -1 for none
 	gpuUsed    int64     // last libretroGPUBytes reading, taken at gpuAt
 	gpuAt      time.Time
-	stallShown int64 // last whole second a loading message was shown for
+	cost       frameCost // libretroFrameFaults' previous reading
+	evictOwed  int64     // GPU bytes still to evict, a slice per frame
+	stallShown int64     // last whole second a loading message was shown for
 
 	speaker  *LibretroSpeaker
 	audioAcc float64
@@ -409,15 +413,14 @@ func libretroPresentFrame() {
 	// the other buffer, so this is the last moment the frame is where a dump
 	// reads it.
 	libretroBenchFrame(w, h, step)
-	// A frame over budget: say whether lazy textures or sound checks were in it.
+	// A frame over budget: say what the game thread spent it on.
 	if step > 16*time.Millisecond && lr.st.on {
-		fmt.Fprintf(os.Stderr, "Ikemen GO: slow frame %.1fms: %d on-demand textures in %.1fms, %d tasks queued, sound checks %d in %.1fms\n",
+		f := libretroFrameFaults()
+		fmt.Fprintf(os.Stderr, "Ikemen GO: slow frame %.1fms: %d on-demand textures in %.1fms, %d tasks queued, %dMiB evicted, %d major faults, %d GC, cpu user %.1fms sys %.1fms, %d preempted\n",
 			float64(step)/1e6, lazyDemandN, float64(lazyDemandT)/1e6, len(sys.mainThreadTask),
-			sndCheckN.Load(), float64(sndCheckT.Load())/1e6)
+			lazyEvictedN>>20, f.faults, f.gcs, float64(f.user)/1e6, float64(f.sys)/1e6, f.preempt)
 	}
-	lazyDemandN, lazyDemandT = 0, 0
-	sndCheckN.Store(0)
-	sndCheckT.Store(0)
+	lazyDemandN, lazyDemandT, lazyEvictedN = 0, 0, 0
 	if lr.w != w || lr.h != h {
 		lr.w, lr.h = w, h
 		if !libretroHW.active {
@@ -452,6 +455,9 @@ func libretroPresentFrame() {
 	}
 	<-lr.frameReq
 	lr.st.reqAt = time.Now()
+	if lr.st.on {
+		libretroFrameFaults() // the next frame's counts start here
+	}
 }
 
 // libretroReadbackFrame is the software path: read framebuffer 0 back into
@@ -874,8 +880,16 @@ func libretroGPUOK() bool {
 		lr.gpuAt, lr.gpuUsed = time.Now(), libretroGPUBytes()
 		// Prefetch stops at the cap, but sprites drawn on demand past it
 		// keep adding: give back what has not been drawn for a while.
-		if lr.gpuUsed > lr.gpuCap {
-			lazyEvict(lr.gpuUsed - lr.gpuCap)
+		lr.evictOwed = max(lr.gpuUsed-lr.gpuCap, 0)
+		lazyFull.Store(lr.gpuUsed >= lr.gpuCap)
+	}
+	// 8MiB a frame at most: freeing hundreds at once kept the game thread
+	// in the kernel for 75ms.
+	if lr.evictOwed > 0 {
+		if n := lazyEvict(min(lr.evictOwed, 8<<20)); n > 0 {
+			lr.evictOwed -= n
+		} else {
+			lr.evictOwed = 0 // nothing idle enough: retry at the next reading
 		}
 	}
 	return lr.gpuUsed < lr.gpuCap
@@ -1553,4 +1567,30 @@ func (s *LibretroSpeaker) Read(out []int16) {
 	for i := got * 2; i < len(out); i++ {
 		out[i] = 0
 	}
+}
+
+// frameCost is the game thread's share of one frame, for the slow-frame log.
+type frameCost struct {
+	faults, preempt int64 // major page faults (disk reads), involuntary switches
+	user, sys       time.Duration
+	gcs             uint32
+}
+
+// libretroFrameFaults returns what the game thread spent since its previous
+// call: page faults, CPU time in and out of the kernel, preemptions, GC.
+func libretroFrameFaults() (c frameCost) {
+	var ru syscall.Rusage
+	syscall.Getrusage(1 /* RUSAGE_THREAD */, &ru)
+	// runtime/metrics, not ReadMemStats: that one stops the world, and a
+	// goroutine stuck in a page fault made it wait tens of ms every frame.
+	gc := []metrics.Sample{{Name: "/gc/cycles/total:gc-cycles"}}
+	metrics.Read(gc)
+	now := frameCost{faults: int64(ru.Majflt), preempt: int64(ru.Nivcsw),
+		user: time.Duration(syscall.TimevalToNsec(ru.Utime)), sys: time.Duration(syscall.TimevalToNsec(ru.Stime)),
+		gcs: uint32(gc[0].Value.Uint64())}
+	p := lr.cost
+	c = frameCost{now.faults - p.faults, now.preempt - p.preempt, now.user - p.user, now.sys - p.sys,
+		now.gcs - p.gcs}
+	lr.cost = now
+	return
 }

@@ -773,8 +773,8 @@ var lazyMade []weak.Pointer[lazyTex]
 // 10s until about over bytes are given back (GL thread only). Without it GPU
 // memory -- system RAM on a Pi -- only grows over a session: every sprite
 // drawn once keeps its texture. An evicted sprite is remade from its mapped
-// texels (1-5ms) if it shows again.
-func lazyEvict(over int64) {
+// texels (1-5ms) if it shows again. Returns the bytes given back.
+func lazyEvict(over int64) (freed int64) {
 	idle := sys.frameCounter - 600
 	var old []*lazyTex
 	live := lazyMade[:0]
@@ -798,12 +798,15 @@ func lazyEvict(over int64) {
 		if l.depth <= 8 {
 			bpp = 1
 		}
-		over -= int64(l.w) * int64(l.h) * bpp
+		n := int64(l.w) * int64(l.h) * bpp
+		over, freed = over-n, freed+n
+		lazyEvictedN += n
 		if r, ok := l.tex.(interface{ release() }); ok {
 			r.release()
 		}
 		l.tex = nil
 	}
+	return freed
 }
 
 // lazyQueue lists textures still to make, in the order to prefetch them.
@@ -818,10 +821,16 @@ type lazyEntry struct {
 	g, n uint16 // sprite group and number: the prefetch order
 }
 
+// lazyEvictedN: texture bytes evicted this frame, for the slow-frame log.
+var lazyEvictedN int64
+
 // lazyDemandN/T: textures made on first draw this frame and the time spent,
 // for the slow-frame log (IKEMEN_PROFILE).
 var lazyDemandN int
 var lazyDemandT time.Duration
+
+// lazyFull is set while GPU memory is at the cap (by the libretro core).
+var lazyFull atomic.Bool
 
 // lazyGPUOK reports whether more GPU memory may go to prefetched textures
 // (set by the libretro core; nil: no cap).
@@ -846,6 +855,11 @@ func lazyEnqueue(sprites []*Sprite) {
 	go func() {
 		lowPriority()
 		for _, e := range es {
+			// Nothing more is prefetched past the GPU memory cap: reading
+			// texels in then only crowds the page cache of a small board.
+			for lazyFull.Load() && e.w.Value() != nil {
+				time.Sleep(100 * time.Millisecond)
+			}
 			l := e.w.Value()
 			if l == nil {
 				continue
@@ -853,13 +867,9 @@ func lazyEnqueue(sprites []*Sprite) {
 			lazyQueue.Lock()
 			data, keep := l.data, l.keep
 			lazyQueue.Unlock()
-			var sum byte
-			for i := 0; i < len(data); i += 4096 {
-				sum += data[i]
-			}
+			populate(data)
 			l.warmTrim = spriteTrims(data, l.w, l.h, l.depth)
 			runtime.KeepAlive(keep)
-			lazyWarmSink.Add(uint32(sum))
 			l.warm.Store(true)
 		}
 	}()
@@ -915,9 +925,6 @@ func lazyMakeNow(budget time.Duration) {
 		}
 	}
 }
-
-// lazyWarmSink keeps the page-touching loop from being optimised away.
-var lazyWarmSink atomic.Uint32
 
 func newSprite() *Sprite {
 	return &Sprite{palidx: -1}
