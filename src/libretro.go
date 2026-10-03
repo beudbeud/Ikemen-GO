@@ -212,6 +212,7 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 			cfg.Config.BootLoadingMode = 1
 		}
 	})
+	libretroLowRAM = libretroMemTotal() > 0 && libretroMemTotal() < 3<<30
 	libretroDefaultMemoryLimit()
 	libretroForceInput()
 	libretroForceResolution() // before sprite detail: it reads the game size
@@ -957,7 +958,7 @@ func libretroSpriteDetail() {
 			// (Recalbox recommends a 2GiB Pi 5): Ultimate Cosmos' match alone
 			// is ~1.6GiB of textures, and squeezed into ~1GiB free the page
 			// cache thrashes -- menus fell to 37fps. Half is a quarter of it.
-			if assetsH >= 720 && libretroMemTotal() > 0 && libretroMemTotal() < 3<<30 {
+			if assetsH >= 720 && libretroLowRAM {
 				libretroSpriteShrink = Max(libretroSpriteShrink, 2)
 			}
 			// Some packs declare a small GameWidth/Height while shipping HD

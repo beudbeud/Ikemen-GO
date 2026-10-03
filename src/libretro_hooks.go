@@ -22,6 +22,9 @@ var (
 	// A loader that must wait for that thread to drain its queue has to know
 	// whether it is that thread: the isMainThread flags are not reliable.
 	libretroGLTid int
+	// libretroLowRAM: the machine has under 3GiB (Recalbox recommends a 2GiB
+	// Pi 5); sprite detail Auto then loads HD packs at half definition.
+	libretroLowRAM bool
 	// libretroExit replaces os.Exit: a core may not kill the frontend process.
 	libretroExit func()
 	// libretroRumble replaces SDL rumble: the frontend owns the physical pads,
