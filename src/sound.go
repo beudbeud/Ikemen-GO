@@ -710,15 +710,39 @@ type Sound struct {
 	wavData []byte
 	format  beep.Format
 	length  int
+	mapping *sndMapping // non-nil when wavData points into it
 }
 
-func readSound(f io.ReadSeekCloser, size uint32) (*Sound, error) {
+// sndMapping owns a memory-mapped .snd file (see mmapSnd); it is unmapped
+// by a finalizer once no Sound or playing streamer references it.
+type sndMapping struct {
+	data []byte
+}
+
+// sndReader keeps the mapping alive for as long as a streamer reads from it:
+// a sound may still be playing after its Snd was dropped.
+type sndReader struct {
+	*bytes.Reader
+	mapping *sndMapping
+}
+
+func readSound(f io.ReadSeekCloser, size uint32, m *sndMapping) (*Sound, error) {
 	if size < 128 {
 		return nil, fmt.Errorf("wav size is too small")
 	}
-	wavData := make([]byte, size)
-	if _, err := f.Read(wavData); err != nil {
-		return nil, err
+	var wavData []byte
+	if m != nil {
+		if pos, err := f.Seek(0, io.SeekCurrent); err == nil && pos+int64(size) <= int64(len(m.data)) {
+			wavData = m.data[pos : pos+int64(size) : pos+int64(size)]
+		} else {
+			m = nil
+		}
+	}
+	if m == nil {
+		wavData = make([]byte, size)
+		if _, err := f.Read(wavData); err != nil {
+			return nil, err
+		}
 	}
 	// Decode the sound at least once, so that we know the format is OK
 	s, wavfmt, err := wav.Decode(bytes.NewReader(wavData))
@@ -758,11 +782,11 @@ func readSound(f io.ReadSeekCloser, size uint32) (*Sound, error) {
 	if recovered != nil {
 		return nil, nil // If sound wasn't able to be fully played, we disable it to avoid engine freezing
 	}
-	return &Sound{wavData, wavfmt, s.Len()}, nil
+	return &Sound{wavData, wavfmt, s.Len(), m}, nil
 }
 
 func (s *Sound) GetStreamer() beep.StreamSeeker {
-	streamer, _, _ := wav.Decode(bytes.NewReader(s.wavData))
+	streamer, _, _ := wav.Decode(sndReader{bytes.NewReader(s.wavData), s.mapping})
 	return streamer
 }
 
@@ -823,6 +847,10 @@ func LoadSndFiltered(filename string, keepItem func([2]int32) bool, max uint32) 
 		return nil, err
 	}
 	defer func() { chk(f.Close()) }()
+	var m *sndMapping
+	if osf, ok := f.(*os.File); ok {
+		m = mmapSnd(osf)
+	}
 	buf := make([]byte, 12)
 	var n int
 	if n, err = f.Read(buf); err != nil {
@@ -871,7 +899,7 @@ func LoadSndFiltered(filename string, keepItem func([2]int32) bool, max uint32) 
 			if exists {
 				LogMessage("WARNING: Duplicate sound key in %v: %v,%v (index %v ignored)", filename, num[0], num[1], i)
 			} else {
-				tmp, err := readSound(f, subFileLength)
+				tmp, err := readSound(f, subFileLength, m)
 				if err != nil {
 					LogMessage("Sound %v,%v in %v can't be read: %v", num[0], num[1], filename, err)
 					if max > 0 {
