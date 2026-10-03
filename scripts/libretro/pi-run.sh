@@ -45,7 +45,9 @@ done
 # loser dies two seconds in with nothing logged.
 lock=/tmp/ikbench.lock
 mkdir "$lock" 2>/dev/null || { echo "pi-run: another run holds $lock" >&2; exit 3; }
-trap 'rmdir "$lock" 2>/dev/null' EXIT HUP INT TERM
+pid=
+trap '[ -n "$pid" ] && kill "$pid" 2>/dev/null; rmdir "$lock" 2>/dev/null' EXIT
+trap 'exit 130' HUP INT TERM
 
 # EmulationStation restarts itself and takes the display back mid-run.
 if pgrep emulationstatio >/dev/null 2>&1; then
@@ -60,8 +62,7 @@ rm -f "$out"/log.txt "$out"/summary.env "$out"/frame_*.ppm
 
 cfgdir=/recalbox/share/system/configs/retroarch
 cp "$cfgdir/cores/retroarch-core-options.cfg" "$out/opts.cfg"
-sed -i "s|^ikemen_go_resolution = .*|ikemen_go_resolution = \"$res\"|" "$out/opts.cfg"
-printf '%s' "$coreopts" | while IFS='=' read -r k v; do
+printf '%s\n%s' "ikemen_go_resolution=$res" "$coreopts" | while IFS='=' read -r k v; do
 	[ -n "$k" ] || continue
 	sed -i "/^$k = /d" "$out/opts.cfg"
 	echo "$k = \"$v\"" >>"$out/opts.cfg"
@@ -144,7 +145,7 @@ set -- $(thermal); temp1=$1 thr1=$2
 	echo "throttled_start=$thr0"
 	echo "throttled_end=$thr1"
 	# "Ikemen GO: bench frames=1800 fps=54.93 ..." -> one key=value per line
-	grep -m1 'Ikemen GO: bench ' "$out/log.txt" | sed 's/^.*bench //' | tr ' ' '\n'
+	grep -m1 'Ikemen GO: bench frames=' "$out/log.txt" | sed 's/^.*bench //' | tr ' ' '\n'
 } >"$out/summary.env"
 
 if [ -n "$bench" ] && ! grep -q '^frames=' "$out/summary.env"; then

@@ -25,11 +25,11 @@ while getopts s:r:n:VpSH:o: opt; do
 	case $opt in
 	s) scenario=$OPTARG ;; r) res=$OPTARG ;; n) rounds=$OPTARG ;; V) novsync=-V ;;
 	p) pixels=1 ;; S) selfcheck=1 pixels=1 ;; H) host=$OPTARG ;; o) outdir=$OPTARG ;;
-	*) sed -n '2,20p' "$0" >&2; exit 2 ;;
+	*) sed -n '2,19p' "$0" >&2; exit 2 ;;
 	esac
 done
 shift $((OPTIND - 1))
-[ $# -eq 2 ] || { sed -n '2,20p' "$0" >&2; exit 2; }
+[ $# -eq 2 ] || { sed -n '2,19p' "$0" >&2; exit 2; }
 coreA=$1 coreB=$2
 for c in "$coreA" "$coreB"; do [ -f "$c" ] || { echo "ab: no such core: $c" >&2; exit 2; }; done
 

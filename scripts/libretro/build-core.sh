@@ -17,7 +17,7 @@ src=$(cd "$(dirname "$0")/../.." && pwd)
 rb=${RECALBOX_DIR:-$HOME/Images/Darktable/recalbox}
 arch=${ARCH:-rpi5_64}
 
-grep -q "LIBRETRO_IKEMENGO_OVERRIDE_SRCDIR *= *$src" "$rb/local.mk" || {
+grep -q "LIBRETRO_IKEMENGO_OVERRIDE_SRCDIR *= *$src[[:space:]]*\$" "$rb/local.mk" || {
 	echo "build-core: $rb/local.mk does not override the core with $src" >&2
 	exit 1
 }
