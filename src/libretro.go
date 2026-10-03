@@ -192,11 +192,18 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	//    Config.Save a no-op here it would replay on every single boot.
 	//  - ExternalShaders panics on a missing or GLES-incompatible file, and
 	//    post-processing belongs to the frontend's own shader pipeline.
+	//  - BootLoadingMode 0 (the engine default) preloads every portrait and
+	//    stage preview before the logo: ~19s of frozen screen for Ultimate
+	//    Cosmos on a Pi reading from USB. 1 does it in the background while
+	//    the logo and intro play, and still waits before the select screen.
 	libretroOverrideConfig(func(cfg *Config) {
 		cfg.Video.KeepAspect = true
 		cfg.Video.Framerate = int(libretroFPS)
 		cfg.Config.FirstRun = false
 		cfg.Video.ExternalShaders = nil
+		if cfg.Config.BootLoadingMode == 0 {
+			cfg.Config.BootLoadingMode = 1
+		}
 	})
 	libretroDefaultMemoryLimit()
 	libretroForceInput()

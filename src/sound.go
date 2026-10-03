@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/ikemen-engine/beep/v2"
 	"github.com/ikemen-engine/beep/v2/effects"
@@ -711,6 +712,8 @@ type Sound struct {
 	format  beep.Format
 	length  int
 	mapping *sndMapping // non-nil when wavData points into it
+	check   sync.Once   // full playthrough check, see playable
+	bad     bool
 }
 
 // sndMapping owns a memory-mapped .snd file (see mmapSnd); it is unmapped
@@ -749,8 +752,28 @@ func readSound(f io.ReadSeekCloser, size uint32, m *sndMapping) (*Sound, error) 
 	if err != nil {
 		return nil, err
 	}
-	// Check if the file can be fully played
-	// Run a decode test and catch any panics.
+	snd := &Sound{wavData: wavData, format: wavfmt, length: s.Len(), mapping: m}
+	// A mapped wave is checked later (see LoadSndFiltered): checking it here
+	// reads the whole bank off the disk before the game can show anything.
+	if m == nil && !snd.playable() {
+		return nil, nil // If sound wasn't able to be fully played, we disable it to avoid engine freezing
+	}
+	return snd, nil
+}
+
+// playable reports whether the wave decodes to its end, checking it once.
+func (s *Sound) playable() bool {
+	s.check.Do(func() { s.bad = !wavPlaysThrough(s.wavData) })
+	return !s.bad
+}
+
+// wavPlaysThrough decodes a whole wave and catches any panic: a sound that
+// can't be fully played would freeze the engine.
+func wavPlaysThrough(wavData []byte) bool {
+	s, _, err := wav.Decode(bytes.NewReader(wavData))
+	if err != nil {
+		return false
+	}
 	var recovered interface{}
 	func() {
 		defer func() {
@@ -778,11 +801,7 @@ func readSound(f io.ReadSeekCloser, size uint32, m *sndMapping) (*Sound, error) 
 			}
 		}
 	}()
-	// If a panic was caught.
-	if recovered != nil {
-		return nil, nil // If sound wasn't able to be fully played, we disable it to avoid engine freezing
-	}
-	return &Sound{wavData, wavfmt, s.Len(), m}, nil
+	return recovered == nil
 }
 
 func (s *Sound) GetStreamer() beep.StreamSeeker {
@@ -842,6 +861,13 @@ func LoadSnd(filename string) (*Snd, error) {
 // If max > 0, the function returns immediately when a matching entry is found. It also gives up after "max" non-matching entries.
 func LoadSndFiltered(filename string, keepItem func([2]int32) bool, max uint32) (*Snd, error) {
 	s := newSnd()
+	// Like the sff log: which sound banks cost load time is otherwise invisible.
+	start := time.Now()
+	defer func() {
+		if d := time.Since(start); d > 100*time.Millisecond {
+			fmt.Fprintf(os.Stderr, "Ikemen GO: snd %s: %d sounds in %dms\n", filename, len(s.table), d.Milliseconds())
+		}
+	}()
 	f, err := OpenFile(filename)
 	if err != nil {
 		return nil, err
@@ -918,6 +944,23 @@ func LoadSndFiltered(filename string, keepItem func([2]int32) bool, max uint32) 
 			}
 		}
 		subHeaderOffset = nextSubHeaderOffset
+	}
+	if m != nil {
+		// Check the mapped waves off the loading path, while the game is
+		// already running; one played before its turn is checked by Play.
+		sounds := make([]*Sound, 0, len(s.table))
+		for _, so := range s.table {
+			if so != nil {
+				sounds = append(sounds, so)
+			}
+		}
+		go func() {
+			for _, so := range sounds {
+				if !so.playable() {
+					fmt.Fprintf(os.Stderr, "WARNING: a sound in %v is corrupted and can't be played, so it was disabled\n", filename)
+				}
+			}
+		}()
 	}
 	return s, nil
 }
@@ -1058,7 +1101,7 @@ func (s *SoundChannel) Reset() {
 }
 
 func (s *SoundChannel) Play(sound *Sound, group, number, loop int32, freqmul float32, loopStart, loopEnd, startPosition int) {
-	if sound == nil {
+	if sound == nil || !sound.playable() {
 		return
 	}
 

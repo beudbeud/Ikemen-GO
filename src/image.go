@@ -2308,21 +2308,17 @@ func (s *Sff) loadPalettes(f io.ReadSeeker, lofs uint32) error {
 			return ErrLoadingCanceled
 		}
 		f.Seek(int64(s.header.FirstPaletteHeaderOffset)+int64(i*16), 0)
-		var gn [3]uint16
-		if err := read(gn[:]); err != nil {
+		// The 16-byte header in one read (it was four syscalls).
+		var hdr struct {
+			Gn     [3]uint16
+			Link   uint16
+			Ofs    uint32
+			PlSize uint32
+		}
+		if err := read(&hdr); err != nil {
 			return err
 		}
-		var link uint16
-		if err := read(&link); err != nil {
-			return err
-		}
-		var ofs, plSize uint32
-		if err := read(&ofs); err != nil {
-			return err
-		}
-		if err := read(&plSize); err != nil {
-			return err
-		}
+		gn, link, ofs, plSize := hdr.Gn, hdr.Link, hdr.Ofs, hdr.PlSize
 		var pal []uint32
 		var idx int
 		if old, ok := uniquePals[[2]uint16{gn[0], gn[1]}]; ok {
@@ -2394,6 +2390,13 @@ func (s *Sff) ReadPalette(f io.ReadSeeker, offset int64, size uint32) ([]uint32,
 	// Previously Ikemen always allocated 256 colors, but because of RemapPal we must respect the original color count
 	pal := make([]uint32, depth)
 
+	// One read for the whole palette: a read per colour was 256 syscalls per
+	// palette, seconds of select-screen preloading on a Pi reading from USB.
+	raw := make([]byte, 4*min(rawCount, len(pal)))
+	if _, err := io.ReadFull(f, raw); err != nil {
+		return nil, err
+	}
+
 	// Read the actual data
 	// Loop through the entire allocated palette, not just the colors found in the file
 	for i := 0; i < len(pal); i++ {
@@ -2402,9 +2405,7 @@ func (s *Sff) ReadPalette(f io.ReadSeeker, offset int64, size uint32) ([]uint32,
 		// Only read from file while within bounds
 		// If len(pal) > rawCount the rest will default to 0's
 		if i < rawCount {
-			if err := binary.Read(f, binary.LittleEndian, rgba[:]); err != nil {
-				return nil, err
-			}
+			copy(rgba[:], raw[4*i:])
 		}
 
 		// Fill in the alpha values

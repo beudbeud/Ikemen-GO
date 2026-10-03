@@ -56,6 +56,9 @@ func TestSndMmap(t *testing.T) {
 	if so == nil || so.mapping == nil {
 		t.Fatalf("sound not read from the mapping: %+v", so)
 	}
+	if !so.playable() {
+		t.Fatal("mapped wave deferred its check and then failed it")
+	}
 	if !bytes.Equal(so.wavData, wav.Bytes()) {
 		t.Fatal("mapped wave differs from the file's")
 	}
