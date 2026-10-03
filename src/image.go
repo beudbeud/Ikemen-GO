@@ -680,10 +680,51 @@ type Sprite struct {
 	// box worth it: [0] outside which every texel is all zero, [1] outside
 	// which every texel is black, whatever its alpha (RGB sprites only).
 	trim [2][4]float32
+	// lazy holds texels not on the GPU yet (see texture); shared by every
+	// sprite that links to the same image.
+	lazy *lazyTex
 }
 
 func (s *Sprite) isBlank() bool {
-	return s.Tex == nil || s.Size[0] == 0 || s.Size[1] == 0
+	return s.Tex == nil && s.lazy == nil || s.Size[0] == 0 || s.Size[1] == 0
+}
+
+// lazyTex is a sprite image left in a memory-mapped SFF cache file until it
+// is first drawn: an HD pack uploads every sprite of every file it loads, most
+// never shown (2.2GiB of GPU memory -- which is system RAM on a Pi -- for
+// Ultimate Cosmos at 720p), while a texture made on demand costs ~1ms once.
+type lazyTex struct {
+	data   []byte // texels, sliced out of keep
+	keep   *fileMapping
+	w, h   int32
+	depth  int32
+	filter bool
+	tex    Texture
+	trim   [2][4]float32
+}
+
+// texture returns the sprite's texture, making it first if it was left lazy.
+// GL thread only: that is where every draw happens.
+func (s *Sprite) texture() Texture {
+	if s.Tex == nil && s.lazy != nil {
+		l := s.lazy
+		if l.tex == nil {
+			tex, err := gfx.newTexture(l.w, l.h, l.depth, l.filter)
+			if err != nil {
+				LogMessage("[VRAM] lazy newTexture failed: %v", err)
+				s.lazy = nil
+				return nil
+			}
+			tex.SetData(l.data)
+			l.tex, l.trim = tex, spriteTrims(l.data, l.w, l.h, l.depth)
+			l.data, l.keep = nil, nil // the mapping can go once all are made
+			if libretroFill != nil {
+				libretroFillSprites[tex] = s
+			}
+		}
+		s.Tex, s.trim = l.tex, l.trim
+	}
+	return s.Tex
 }
 
 func newSprite() *Sprite {
@@ -832,6 +873,7 @@ func (s *Sprite) shareCopy(src *Sprite) {
 	sys.mainThreadTask <- func() {
 		s.Tex = src.Tex
 		s.trim = src.trim
+		s.lazy = src.lazy
 	}
 
 	//s.paltemp = src.paltemp
@@ -909,8 +951,8 @@ func (s *Sprite) SetRaw(data []byte, sprWidth int32, sprHeight int32, sprDepth i
 // yet handed to the GPU: the heap a loader is holding on the GL thread's behalf.
 var texUploadPending atomic.Int64
 
-func (s *Sprite) uploadTexture(data []byte, w, h, depth int32, filter bool) {
-	var trim [2][4]float32
+// spriteTrims computes both trim boxes of a bitmap (see Sprite.trim).
+func spriteTrims(data []byte, w, h, depth int32) (trim [2][4]float32) {
 	switch depth {
 	case 8:
 		trim[0] = spriteTrim(data, w, h, 1, 1)
@@ -920,6 +962,11 @@ func (s *Sprite) uploadTexture(data []byte, w, h, depth int32, filter bool) {
 		trim[0] = spriteTrim(data, w, h, 4, 4)
 		trim[1] = spriteTrim(data, w, h, 4, 3)
 	}
+	return
+}
+
+func (s *Sprite) uploadTexture(data []byte, w, h, depth int32, filter bool) {
+	trim := spriteTrims(data, w, h, depth)
 	n := int64(len(data))
 	texUploadPending.Add(n)
 	sys.mainThreadTask <- func() {
@@ -1528,7 +1575,7 @@ func (s *Sprite) CachePalTex(pal []uint32) Texture {
 }
 
 func (s *Sprite) Draw(x, y, xscale, yscale float32, rxadd float32, rot Rotation, projectionMode int32, fLength float32, fx *PalFX, window *[4]int32) {
-	if s.Tex == nil {
+	if s.texture() == nil {
 		return
 	}
 

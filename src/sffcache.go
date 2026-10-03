@@ -327,6 +327,8 @@ func sffCacheEvict(dir string, max int64, keep string) {
 // sprite, not a several-hundred-MB file.
 type sfcReader struct {
 	r   *bufio.Reader
+	m   []byte // the mapped file when there is one: reads slice it, no copy
+	off int
 	tmp [8]byte
 	err bool
 }
@@ -335,6 +337,15 @@ func (r *sfcReader) bytes(n int) []byte {
 	if r.err || n < 0 || n > 1<<28 { // corrupt length must not OOM
 		r.err = true
 		return nil
+	}
+	if r.m != nil {
+		if r.off+n > len(r.m) {
+			r.err = true
+			return nil
+		}
+		b := r.m[r.off : r.off+n : r.off+n]
+		r.off += n
+		return b
 	}
 	b := make([]byte, n)
 	if _, err := io.ReadFull(r.r, b); err != nil {
@@ -348,6 +359,9 @@ func (r *sfcReader) bytes(n int) []byte {
 func (r *sfcReader) small(n int) []byte {
 	if r.err {
 		return nil
+	}
+	if r.m != nil {
+		return r.bytes(n)
 	}
 	if _, err := io.ReadFull(r.r, r.tmp[:n]); err != nil {
 		r.err = true
@@ -395,7 +409,9 @@ func (r *sfcReader) u32s(n int) []uint32 {
 }
 
 // sffCacheLoad returns the cached Sff, or nil on miss/staleness/corruption.
-// Texture uploads are queued on the main thread exactly like a normal load.
+// Mapped (Unix), each sprite keeps its texels in the file and makes its texture
+// when first drawn (Sprite.texture); otherwise uploads are queued on the main
+// thread exactly like a normal load.
 // sffCacheThrottle keeps a cache load from queueing a whole file's pixels for
 // the GL thread at once: reading is far faster than uploading, so the heap
 // held ~280MiB (fightfx, an HD character) before the queue drained. Past the
@@ -444,6 +460,13 @@ func sffCacheLoad(filename string, char, isActPal bool) *Sff {
 	}
 
 	r := &sfcReader{r: bufio.NewReaderSize(f, 1<<20)}
+	// Mapped, the texels stay in the file until a sprite is first drawn.
+	m := mmapFile(f)
+	if m != nil {
+		r.m = m.data
+		// A sprite's first draw must not wait on the SD card: 40ms hitches.
+		willNeed(m.data)
+	}
 	if string(r.bytes(len(sffCacheMagic))) != sffCacheMagic {
 		return drop()
 	}
@@ -527,8 +550,12 @@ func sffCacheLoad(filename string, char, isActPal bool) *Sff {
 			if depth > 8 {
 				filter = sys.cfg.Video.RGBSpriteBilinearFilter
 			}
-			spr.uploadTexture(data, w, h, depth, filter)
-			sffCacheThrottle()
+			if m != nil {
+				spr.lazy = &lazyTex{data: data, keep: m, w: w, h: h, depth: depth, filter: filter}
+			} else {
+				spr.uploadTexture(data, w, h, depth, filter)
+				sffCacheThrottle()
+			}
 		case 2:
 			links = append(links, link{i, int(r.i32())})
 		}
@@ -547,6 +574,10 @@ func sffCacheLoad(filename string, char, isActPal bool) *Sff {
 			return drop()
 		}
 		dst, src := list[l.dst], list[l.src]
+		if src.lazy != nil {
+			dst.lazy = src.lazy
+			continue
+		}
 		sys.mainThreadTask <- func() {
 			dst.Tex = src.Tex
 			dst.trim = src.trim

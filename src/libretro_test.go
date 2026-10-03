@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -298,6 +299,20 @@ func TestSffCacheRoundTrip(t *testing.T) {
 	spr := got.sprites[[2]uint16{0, 0}]
 	if spr == nil || spr.Size != [2]uint16{4, 2} || spr.Offset != [2]int16{-3, 7} || spr.palidx != 0 {
 		t.Fatalf("sprite fields: %+v", spr)
+	}
+	// Mapped: texels left in the file until first drawn, shared by the link.
+	if l := spr.lazy; l == nil || !bytes.Equal(l.data, []byte{1, 2, 3, 4, 5, 6, 7, 8}) ||
+		l.w != 4 || l.h != 2 || l.depth != 8 || l.keep == nil {
+		t.Fatalf("lazy texels: %+v", spr.lazy)
+	}
+	if got.sprites[[2]uint16{0, 1}].lazy != spr.lazy {
+		t.Error("linked sprite does not share the lazy texels")
+	}
+	if got.sprites[[2]uint16{9000, 0}].lazy != nil {
+		t.Error("blank sprite got lazy texels")
+	}
+	if n := len(sys.mainThreadTask); n != 0 {
+		t.Errorf("%d uploads queued, want none", n)
 	}
 	if p := got.palList.Get(0); len(p) != 2 || p[0] != 0xff00ff00 {
 		t.Errorf("palette: %v", p)

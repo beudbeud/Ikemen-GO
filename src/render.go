@@ -262,10 +262,10 @@ func (st *ShaderTexture) clear() {
 func (st *ShaderTexture) GetTexture() Texture {
 	if st.Anim != nil {
 		if st.Anim.spr != nil {
-			return st.Anim.spr.Tex
+			return st.Anim.spr.texture()
 		}
 	} else if st.Spr != nil {
-		return st.Spr.Tex
+		return st.Spr.texture()
 	}
 	return nil
 }

@@ -927,6 +927,10 @@ func (a *Animation) Draw(window *[4]int32, x, y, xcs, ycs, xs, xbs, ys,
 	if a == nil || a.isBlank() {
 		return
 	}
+	tex := a.spr.texture() // before trim: a lazy sprite gets both here
+	if tex == nil {
+		return
+	}
 
 	// Determine animation angle. Invert for reflection
 	h, v, angle := a.drawSub1(rot.angle, facing)
@@ -1042,7 +1046,7 @@ func (a *Animation) Draw(window *[4]int32, x, y, xcs, ycs, xs, xbs, ys,
 	}
 
 	rp := RenderParams{
-		tex:            a.spr.Tex,
+		tex:            tex,
 		paltex:         paltex,
 		size:           a.spr.Size,
 		x:              x * sys.widthScale,
@@ -1084,6 +1088,10 @@ func (a *Animation) ShadowDraw(window *[4]int32, x, y, xscl, yscl, vscl, rxadd f
 	if a == nil || a.isBlank() {
 		return
 	}
+	tex := a.spr.texture()
+	if tex == nil {
+		return
+	}
 
 	// Determine animation angle. Invert for shadows
 	h, v, angle := a.drawSub1(rot.angle, facing)
@@ -1099,7 +1107,7 @@ func (a *Animation) ShadowDraw(window *[4]int32, x, y, xscl, yscl, vscl, rxadd f
 	rcOffset := [2]float32{rotPivot[0] * sys.widthScale, rotPivot[1] * sys.heightScale}
 
 	rp := RenderParams{
-		tex:            a.spr.Tex,
+		tex:            tex,
 		paltex:         nil,
 		size:           a.spr.Size,
 		x:              Abs(xscl*h) * float32(a.spr.Offset[0]) * sys.widthScale,
@@ -2182,6 +2190,7 @@ func (a *Anim) Copy() *Anim {
 
 		dst.Tex = src.Tex
 		dst.trim = src.trim
+		dst.lazy = src.lazy
 		dst.palidx = src.palidx
 		dst.coldepth = src.coldepth
 		// Copy arrays (if not slices, this is fine as-is)

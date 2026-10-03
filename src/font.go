@@ -550,7 +550,7 @@ func (f *Fnt) drawChar(
 	}
 
 	spr := f.getCharSpr(c, bank, bt)
-	if spr == nil || spr.Tex == nil {
+	if spr == nil || spr.texture() == nil {
 		return 0
 	}
 

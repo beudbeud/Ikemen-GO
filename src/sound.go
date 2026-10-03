@@ -711,14 +711,15 @@ type Sound struct {
 	wavData []byte
 	format  beep.Format
 	length  int
-	mapping *sndMapping // non-nil when wavData points into it
-	check   sync.Once   // full playthrough check, see playable
+	mapping *fileMapping // non-nil when wavData points into it
+	check   sync.Once    // full playthrough check, see playable
 	bad     bool
 }
 
-// sndMapping owns a memory-mapped .snd file (see mmapSnd); it is unmapped
-// by a finalizer once no Sound or playing streamer references it.
-type sndMapping struct {
+// fileMapping owns a memory-mapped file (see mmapFile); it is unmapped by a
+// finalizer once nothing slicing it (Sound, playing streamer, pending sprite
+// texels) references it.
+type fileMapping struct {
 	data []byte
 }
 
@@ -726,10 +727,10 @@ type sndMapping struct {
 // a sound may still be playing after its Snd was dropped.
 type sndReader struct {
 	*bytes.Reader
-	mapping *sndMapping
+	mapping *fileMapping
 }
 
-func readSound(f io.ReadSeekCloser, size uint32, m *sndMapping) (*Sound, error) {
+func readSound(f io.ReadSeekCloser, size uint32, m *fileMapping) (*Sound, error) {
 	if size < 128 {
 		return nil, fmt.Errorf("wav size is too small")
 	}
@@ -873,9 +874,9 @@ func LoadSndFiltered(filename string, keepItem func([2]int32) bool, max uint32) 
 		return nil, err
 	}
 	defer func() { chk(f.Close()) }()
-	var m *sndMapping
+	var m *fileMapping
 	if osf, ok := f.(*os.File); ok {
-		m = mmapSnd(osf)
+		m = mmapFile(osf)
 	}
 	buf := make([]byte, 12)
 	var n int
