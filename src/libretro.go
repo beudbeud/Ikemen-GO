@@ -792,7 +792,12 @@ func libretroDefaultMemoryLimit() {
 }
 
 // libretroMemTotal is the machine's RAM in bytes, 0 when unknown (non-Linux).
+// IKEMEN_MEMTOTAL_MB overrides it, to simulate a smaller board: the GC limit,
+// the GPU memory cap and sprite detail "Auto" all follow it.
 func libretroMemTotal() int64 {
+	if mb, err := strconv.Atoi(os.Getenv("IKEMEN_MEMTOTAL_MB")); err == nil && mb > 0 {
+		return int64(mb) << 20
+	}
 	b, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
 		return 0
@@ -858,10 +863,6 @@ func libretroPrefetch(try func() bool) bool {
 func libretroGPUOK() bool {
 	if lr.gpuCap == 0 {
 		lr.gpuCap = libretroMemTotal() / 4
-		// IKEMEN_GPU_CAP_MB sets it directly: simulating a smaller board.
-		if mb, err := strconv.Atoi(os.Getenv("IKEMEN_GPU_CAP_MB")); err == nil && mb > 0 {
-			lr.gpuCap = int64(mb) << 20
-		}
 		if lr.gpuCap <= 0 {
 			lr.gpuCap = -1
 		}
@@ -938,6 +939,13 @@ func libretroSpriteDetail() {
 			libretroSpriteShrink = 1
 		default: // Auto
 			libretroSpriteShrink = libretroSpriteShrinkFactor(assetsH, cfg.Video.GameHeight)
+			// An HD pack at full definition does not fit a board under 3GiB
+			// (Recalbox recommends a 2GiB Pi 5): Ultimate Cosmos' match alone
+			// is ~1.6GiB of textures, and squeezed into ~1GiB free the page
+			// cache thrashes -- menus fell to 37fps. Half is a quarter of it.
+			if assetsH >= 720 && libretroMemTotal() > 0 && libretroMemTotal() < 3<<30 {
+				libretroSpriteShrink = Max(libretroSpriteShrink, 2)
+			}
 			// Some packs declare a small GameWidth/Height while shipping HD
 			// character rips; the per-sprite check catches those too.
 			libretroShrinkGameH = cfg.Video.GameHeight
