@@ -4,6 +4,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha1"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -234,6 +236,14 @@ func TestLibretroDefaultCommon(t *testing.T) {
 }
 
 func TestSffCacheRoundTrip(t *testing.T) {
+	// Both ways a recorded load can end: texels on the heap until the file is
+	// stored (write-behind), or no heap budget and the file mapped at once.
+	for _, budget := range []int64{3 << 30, 0} {
+		t.Run(fmt.Sprintf("budget%d", budget), func(t *testing.T) { testSffCacheRoundTrip(t, budget) })
+	}
+}
+
+func testSffCacheRoundTrip(t *testing.T, available int64) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", dir)
 	wd, _ := os.Getwd()
@@ -243,9 +253,10 @@ func TestSffCacheRoundTrip(t *testing.T) {
 	t.Cleanup(func() { os.Chdir(wd) })
 
 	// The cache is libretro-only; fake being a core for the test.
-	oldPresent := libretroPresent
+	oldPresent, oldAvail := libretroPresent, libretroMemAvailable
 	libretroPresent = func() {}
-	t.Cleanup(func() { libretroPresent = oldPresent })
+	libretroMemAvailable = func() int64 { return available }
+	t.Cleanup(func() { libretroPresent, libretroMemAvailable = oldPresent, oldAvail })
 
 	// A fake source file the cache validates against.
 	src := "fake.sff"
@@ -256,7 +267,7 @@ func TestSffCacheRoundTrip(t *testing.T) {
 	// Build an Sff the way loadSff would leave it.
 	s := newSff()
 	s.filename = src
-	s.header.NumberOfSprites = 3
+	s.header.NumberOfSprites = 4
 	s.palList.SetSource(0, []uint32{0xff00ff00, 0x11223344})
 	s.palList.PalTable[[2]uint16{1, 1}] = 0
 	s.palList.numcols[[2]uint16{1, 1}] = 2
@@ -271,56 +282,90 @@ func TestSffCacheRoundTrip(t *testing.T) {
 		spr.coldepth = 8
 		return spr
 	}
-	list := []*Sprite{mk(0, 0), mk(0, 1), mk(9000, 0)}
-	links := []int32{-1, 0, -1} // sprite 1 shares sprite 0's texture
+	// File order is not group order: the prefetch queue sorts by group, and
+	// every texture must still end up with its own texels.
+	list := []*Sprite{mk(7, 0), mk(7, 1), mk(9000, 0), mk(0, 0)}
+	links := []int32{-1, 0, -1, -1} // sprite 1 shares sprite 0's texture
 	for _, spr := range list {
 		s.sprites[[2]uint16{spr.Group, spr.Number}] = spr
 	}
-	// Capture through the real pipeline so the spill file is exercised too.
-	if !sffCacheBegin() {
-		t.Fatal("sffCacheBegin refused")
-	}
-	for _, spr := range list {
-		sffCaptureExpect(spr)
-	}
-	trim := [2][4]float32{{1, 0, 3, 2}}
-	sffCaptureAdd(list[0], []byte{1, 2, 3, 4, 5, 6, 7, 8}, 4, 2, 8, trim)
-	sffCaptureAdd(newSprite(), []byte{9, 9}, 2, 1, 8, trim) // another loader's sprite: not ours
-	// list[1] is a link, list[2] stays blank
-	captured, spill := sffCacheEnd()
-	sffCacheStore(src, true, false, s, list, links, captured, spill)
 
 	// mainThreadTask must be drainable or the load blocks.
 	old := sys.mainThreadTask
 	sys.mainThreadTask = make(chan func(), 16)
 	t.Cleanup(func() { sys.mainThreadTask = old })
 
+	// Capture through the real pipeline so the entry file is exercised too.
+	if !sffCacheBegin() {
+		t.Fatal("sffCacheBegin refused")
+	}
+	for _, spr := range list {
+		sffCaptureExpect(spr)
+	}
+	texels, texels3 := []byte{1, 2, 3, 4, 5, 6, 7, 8}, []byte{9, 8, 7, 6, 5, 4, 3, 2}
+	trim := [2][4]float32{{1, 0, 3, 2}}
+	if !sffCaptureAdd(list[0], texels, 4, 2, 8, trim) || !sffCaptureAdd(list[3], texels3, 4, 2, 8, trim) {
+		t.Fatal("the recording load's sprites were not captured")
+	}
+	if sffCaptureAdd(newSprite(), []byte{9, 9}, 2, 1, 8, trim) {
+		t.Fatal("another loader's sprite was captured")
+	}
+	// list[1] is a link, list[2] stays blank
+
+	// The recorded load itself: no upload, its sprites read the cache's texels.
+	if !sffCacheFinish(src, true, false, s, list, links) {
+		t.Fatal("sffCacheFinish refused")
+	}
+	(<-sys.mainThreadTask)()
+	l, l3 := list[0].lazy, list[3].lazy
+	if l == nil || l3 == nil || !bytes.Equal(l.data, texels) || !bytes.Equal(l3.data, texels3) ||
+		list[0].trim != trim || list[1].lazy != l || list[2].lazy != nil {
+		t.Fatalf("first load not lazy on the cache's texels: %+v %+v", l, l3)
+	}
+	if onHeap := available > 0; onHeap != (l.keep == nil) {
+		t.Fatalf("texels on the heap: %v, want %v", l.keep == nil, onHeap)
+	}
+	// Once the writer has stored the file, heap texels become the mapped ones.
+	sffCacheFlush()
+	if available > 0 {
+		(<-sys.mainThreadTask)()
+	}
+	if l.keep == nil || l3.keep == nil || !bytes.Equal(l.data, texels) || !bytes.Equal(l3.data, texels3) {
+		t.Fatalf("texels not handed over to the mapped file, each sprite its own: %+v %+v", l, l3)
+	}
+	if sffHeld != 0 {
+		t.Fatalf("%d bytes still counted on the heap", sffHeld)
+	}
+
 	got := sffCacheLoad(src, true, false)
 	if got == nil {
 		t.Fatal("cache miss after store")
 	}
-	if got.header.NumberOfSprites != 3 || len(got.sprites) != 3 {
+	if got.header.NumberOfSprites != 4 || len(got.sprites) != 4 {
 		t.Fatalf("header/sprites: %d/%d", got.header.NumberOfSprites, len(got.sprites))
 	}
-	spr := got.sprites[[2]uint16{0, 0}]
+	if l := got.sprites[[2]uint16{0, 0}].lazy; l == nil || !bytes.Equal(l.data, texels3) {
+		t.Fatalf("second sprite's texels: %+v", l)
+	}
+	spr := got.sprites[[2]uint16{7, 0}]
 	if spr == nil || spr.Size != [2]uint16{4, 2} || spr.Offset != [2]int16{-3, 7} || spr.palidx != 0 {
 		t.Fatalf("sprite fields: %+v", spr)
 	}
 	// Mapped: texels left in the file until first drawn, shared by the link.
-	if l := spr.lazy; l == nil || !bytes.Equal(l.data, []byte{1, 2, 3, 4, 5, 6, 7, 8}) ||
+	if l := spr.lazy; l == nil || !bytes.Equal(l.data, texels) ||
 		l.w != 4 || l.h != 2 || l.depth != 8 || l.keep == nil {
 		t.Fatalf("lazy texels: %+v", spr.lazy)
 	}
-	if linked := got.sprites[[2]uint16{0, 1}]; linked.lazy != spr.lazy || linked.trim != trim {
+	if linked := got.sprites[[2]uint16{7, 1}]; linked.lazy != spr.lazy || linked.trim != trim {
 		t.Error("linked sprite does not share the lazy texels and their trim")
 	}
 	if spr.trim != trim {
 		t.Errorf("trim boxes lost: %v", spr.trim)
 	}
-	// Texels are on disk once: magic, the 8 bytes, then the table.
+	// Texels are on disk once: magic, the two blobs, then the table.
 	if st, err := os.Stat(sffCachePath(src, true, false)); err != nil {
 		t.Error(err)
-	} else if st.Size() > 400 {
+	} else if st.Size() > 500 {
 		t.Errorf("entry file is %d bytes", st.Size())
 	}
 	if tmps, _ := filepath.Glob(filepath.Join(dir, "ikemen-go", "*")); len(tmps) != 1 {
@@ -353,6 +398,61 @@ func TestSffCacheRoundTrip(t *testing.T) {
 	if sffCacheLoad(src, true, false) != nil {
 		t.Error("stale cache should miss")
 	}
+}
+
+// IKEMEN_TEST_SFF=<a real .sff>: what the recorded load holds on the heap, what
+// the stored file holds once the sprites are handed over to it, and what a
+// cached load reads back must be the same texels, sprite for sprite.
+func TestSffCacheRealFile(t *testing.T) {
+	src := os.Getenv("IKEMEN_TEST_SFF")
+	if src == "" {
+		t.Skip("IKEMEN_TEST_SFF not set")
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	oldPresent, oldAvail := libretroPresent, libretroMemAvailable
+	libretroPresent = func() {}
+	libretroMemAvailable = func() int64 { return 12 << 30 }
+	t.Cleanup(func() { libretroPresent, libretroMemAvailable = oldPresent, oldAvail })
+	old := sys.mainThreadTask
+	sys.mainThreadTask = make(chan func(), 1<<16)
+	t.Cleanup(func() { sys.mainThreadTask = old })
+	drain := func() {
+		for len(sys.mainThreadTask) > 0 {
+			(<-sys.mainThreadTask)()
+		}
+	}
+	s, err := loadSff(src, true, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain()
+	sums := map[*lazyTex][sha1.Size]byte{}
+	for _, spr := range s.sprites {
+		if l := spr.lazy; l != nil {
+			if l.keep != nil {
+				t.Fatal("texels not on the heap")
+			}
+			sums[l] = sha1.Sum(l.data)
+		}
+	}
+	sffCacheFlush()
+	drain()
+	for l, sum := range sums {
+		if l.keep == nil || sha1.Sum(l.data) != sum {
+			t.Fatalf("a %dx%d texture changed between the heap and the file (mapped: %v)", l.w, l.h, l.keep != nil)
+		}
+	}
+	c := sffCacheLoad(src, true, false)
+	if c == nil {
+		t.Fatal("cache miss")
+	}
+	for k, spr := range s.sprites {
+		a, b := spr.lazy, c.sprites[k].lazy
+		if (a == nil) != (b == nil) || a != nil && sha1.Sum(a.data) != sha1.Sum(b.data) {
+			t.Fatalf("sprite %v differs between the recorded load and the cached load", k)
+		}
+	}
+	t.Logf("%d sprites, %d textures", len(s.sprites), len(sums))
 }
 
 func TestLibretroSffCacheEvict(t *testing.T) {

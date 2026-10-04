@@ -748,12 +748,22 @@ func (l *lazyTex) make() bool {
 		return false
 	}
 	tex.SetData(l.data)
+	lazyRoom.Add(-l.bytes())
 	if l.tex = tex; !l.made {
 		l.made = true
 		lazyMade = append(lazyMade, weak.Make(l))
 	}
 	l.used = sys.frameCounter
 	return true
+}
+
+// bytes is what the texture takes on the GPU.
+func (l *lazyTex) bytes() int64 {
+	bpp := int64(4)
+	if l.depth <= 8 {
+		bpp = 1
+	}
+	return int64(l.w) * int64(l.h) * bpp
 }
 
 // lazyMade lists the lazy textures made so far (GL thread only).
@@ -784,11 +794,7 @@ func lazyEvict(over int64) (freed int64) {
 		if over <= 0 {
 			break
 		}
-		bpp := int64(4)
-		if l.depth <= 8 {
-			bpp = 1
-		}
-		n := int64(l.w) * int64(l.h) * bpp
+		n := l.bytes()
 		over, freed = over-n, freed+n
 		lazyEvictedN += n
 		if r, ok := l.tex.(interface{ release() }); ok {
@@ -819,9 +825,15 @@ var lazyEvictedN int64
 var lazyDemandN int
 var lazyDemandT time.Duration
 
-// lazyFull is set while GPU memory is at the cap (by the libretro core):
-// nothing more is prefetched or warmed.
-var lazyFull atomic.Bool
+// lazyRoom is the GPU memory prefetch may still take, in bytes: the libretro
+// core sets it to what is left under its cap at each reading (once a second)
+// and every texture made in between comes off it. A reading alone is too
+// coarse: with texels already in RAM, the second of prefetch before a match
+// made 1.2GiB of textures past the cap. At or under zero nothing more is
+// prefetched or warmed. No cap until a core sets one.
+var lazyRoom atomic.Int64
+
+func init() { lazyRoom.Store(math.MaxInt64) }
 
 // lazyEnqueue adds the lazy textures of one loaded file, lowest sprite
 // groups first: stance, intros and basic moves come before effects.
@@ -844,7 +856,7 @@ func lazyEnqueue(sprites []*Sprite) {
 		for _, e := range es {
 			// Nothing more is prefetched past the GPU memory cap: reading
 			// texels in then only crowds the page cache of a small board.
-			for lazyFull.Load() && e.w.Value() != nil {
+			for lazyRoom.Load() <= 0 && e.w.Value() != nil {
 				time.Sleep(100 * time.Millisecond)
 			}
 			l := e.w.Value()
@@ -879,7 +891,7 @@ func lazyPrefetchOne() (made, retry bool) {
 		}
 		// The cap first: at the cap nothing is warmed either, and waiting
 		// for that kept lazyMakeNow asleep for its whole budget.
-		if lazyFull.Load() {
+		if lazyRoom.Load() <= 0 {
 			lazyQueue.Unlock()
 			return false, false
 		}
@@ -1112,8 +1124,9 @@ func (s *Sprite) SetPxl(px []byte) {
 	}
 	px, w, h := libretroShrinkSprite(px, int32(s.Size[0]), int32(s.Size[1]), 1)
 	trim := spriteTrims(px, w, h, 8)
-	sffCaptureAdd(s, px, w, h, 8, trim)
-	s.uploadTexture(px, w, h, 8, false, trim)
+	if !sffCaptureAdd(s, px, w, h, 8, trim) {
+		s.uploadTexture(px, w, h, 8, false, trim)
+	}
 }
 
 func (s *Sprite) SetRaw(data []byte, sprWidth int32, sprHeight int32, sprDepth int32) {
@@ -1129,8 +1142,9 @@ func (s *Sprite) SetRaw(data []byte, sprWidth int32, sprHeight int32, sprDepth i
 	}
 	data, w, h := libretroShrinkSprite(data, sprWidth, sprHeight, sprDepth/8)
 	trim := spriteTrims(data, w, h, sprDepth)
-	sffCaptureAdd(s, data, w, h, sprDepth, trim)
-	s.uploadTexture(data, w, h, sprDepth, sys.cfg.Video.RGBSpriteBilinearFilter, trim)
+	if !sffCaptureAdd(s, data, w, h, sprDepth, trim) {
+		s.uploadTexture(data, w, h, sprDepth, sys.cfg.Video.RGBSpriteBilinearFilter, trim)
+	}
 }
 
 // spriteTrims computes both trim boxes of a bitmap (see Sprite.trim).
@@ -1979,7 +1993,7 @@ func loadSff(filename string, char bool, isMainThread bool, isActPal bool) (*Sff
 	recording := sffCacheBegin()
 	defer func() {
 		if recording { // an error path: the entry file being built goes
-			sffCacheDrop(sffCacheEnd())
+			sffCacheAbort()
 		}
 	}()
 
@@ -2189,16 +2203,15 @@ func loadSff(filename string, char bool, isMainThread bool, isActPal bool) (*Sff
 		return nil, ErrLoadingCanceled
 	}
 
-	// Only files that actually cost something earn a cache entry; a fast sff
-	// would spend more time writing than it ever saves.
 	if recording {
-		// Ended here, not by the deferred drop: by the time that runs another
+		// Ended here, not by the deferred abort: by the time that runs another
 		// load may be recording, and it is that one it would end.
 		recording = false
-		if captured, spill := sffCacheEnd(); time.Since(start) > 200*time.Millisecond {
-			sffCacheStore(filename, char, isActPal, s, spriteList, cacheLinks, captured, spill)
-		} else {
-			sffCacheDrop(captured, spill)
+		if !sffCacheFinish(filename, char, isActPal, s, spriteList, cacheLinks) {
+			// These sprites' texels went to a file that cannot serve them:
+			// stop recording for the session and load again, the plain way.
+			sffCacheOff.Store(true)
+			return loadSff(filename, char, isMainThread, isActPal)
 		}
 	}
 

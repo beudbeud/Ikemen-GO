@@ -268,6 +268,10 @@ func retro_load_game(game *C.struct_retro_game_info) C.bool {
 	libretroPollInput = libretroDrainKeys
 	libretroExit = libretroOnExit
 	libretroRumble = libretroQueueRumble
+	libretroMemAvailable = func() int64 {
+		b, _ := os.ReadFile("/proc/meminfo")
+		return procBytes(string(b), "MemAvailable:")
+	}
 	libretroPads = MaxPlayerNo
 	lr.started = true
 	libretroStartProfile()
@@ -883,7 +887,7 @@ func libretroPrefetch(try func() bool) bool {
 // libretroGPUSample runs once per presented frame: it reads GPU memory, as the
 // kernel reports it, once a second, and holds it to a quarter of the RAM
 // (Recalbox recommends a 2GiB Pi 5: 512MiB). At the cap prefetch stops
-// (lazyFull); past it, idle textures are evicted. Unknown: no cap.
+// (lazyRoom); past it, idle textures are evicted. Unknown: no cap.
 func libretroGPUSample() {
 	if lr.gpuCap == 0 {
 		lr.gpuCap = libretroMemTotal() / 4
@@ -899,7 +903,7 @@ func libretroGPUSample() {
 		// Prefetch stops at the cap, but sprites drawn on demand past it
 		// keep adding: give back what has not been drawn for a while.
 		lr.evictOwed = max(lr.gpuUsed-lr.gpuCap, 0)
-		lazyFull.Store(lr.gpuUsed >= lr.gpuCap)
+		lazyRoom.Store(lr.gpuCap - lr.gpuUsed)
 	}
 	// 8MiB a frame at most: freeing hundreds at once kept the game thread
 	// in the kernel for 75ms.

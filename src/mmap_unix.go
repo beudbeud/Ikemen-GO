@@ -8,6 +8,8 @@ import (
 	"syscall"
 )
 
+const canMmap = true
+
 // mmapFile maps a whole file read-only. What is sliced out of it (.snd waves,
 // cached sprite texels) is then file-backed pages the kernel can drop and
 // re-read under memory pressure, instead of a heap copy: an HD pack's

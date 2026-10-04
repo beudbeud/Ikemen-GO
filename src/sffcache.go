@@ -15,7 +15,12 @@ package main
 // then only appends the table (everything but texels: palettes, sprite
 // headers, where each blob is, its trim boxes) and renames the file, so
 // texels reach the disk once. A load reads the table in one piece and maps
-// the rest: no texel page is touched until a sprite is warmed or drawn. ponytail: no compression -- a USB3 read beats
+// the rest: no texel page is touched until a sprite is warmed or drawn.
+//
+// Writing happens behind the load, on its own goroutine: an SD card takes
+// ~12MiB/s, and a loader that waited for it kept an HD pack's first boot on
+// a black screen for 70s with the CPU idle. Until its file is complete a
+// sprite reads its texels from the heap, within a budget. ponytail: no compression -- a USB3 read beats
 // the Pi's inflate several times over; add lz4 if the size cap below starts
 // evicting what a session needs.
 //
@@ -27,6 +32,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
@@ -37,6 +43,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -56,21 +63,43 @@ type sffCaptureEntry struct {
 	n           int32 // 0: a sprite of the recording load with no pixels (yet)
 	w, h, depth int32
 	trim        [2][4]float32
+	data        []byte // the texels while the heap holds them for the sprite
+	written     bool   // the writer has put them in the file
+}
+
+// sffRecording is the entry file a loadSff is building.
+type sffRecording struct {
+	f       *os.File
+	w       *bufio.Writer // the writer goroutine's
+	off     int64         // where the next blob goes; the loader's until the load ends
+	entries map[*Sprite]sffCaptureEntry
+	// over: the heap budget is spent (or there is none). Texels then leave
+	// the heap as they reach the file, the load waits for them, and the
+	// sprites read the mapped file when it ends -- what every load did
+	// before writes went behind.
+	over   bool
+	failed bool // a write failed: nothing is stored
 }
 
 var (
-	sffCacheMu    sync.Mutex
-	sffCaptureMap map[*Sprite]sffCaptureEntry // nil when no loadSff is recording
-	// Captured pixels go straight into the entry file being built: an HD
-	// character SFF is hundreds of MB of decoded texels, and holding them all
-	// until the store at the end of the load is what used to spike RAM on a
-	// 4GB board.
-	sffSpillFile   *os.File
-	sffSpillWriter *bufio.Writer
-	sffSpillOff    int64
-	sffSpillFailed bool // a write failed: the recording ends up discarded
+	sffCacheMu   sync.Mutex
+	sffCacheCond = sync.NewCond(&sffCacheMu)
+	sffRec       *sffRecording // the load being recorded, nil when none
+	// sffHeld is the texel bytes the heap holds until they are on disk, and
+	// sffBudget what it may reach before a load waits for the disk: half the
+	// available RAM when a recording begins, 1.5GiB at most (an HD pack's
+	// boot is 1.3GiB of texels), nothing on a board under 3GiB.
+	sffHeld, sffBudget int64
+	// sffJobs is the writer goroutine's queue: blobs and stores, in file
+	// order -- which is why a blob is queued under the lock that gave it its
+	// offset (decode workers capture concurrently).
+	sffJobs     []func()
+	sffJobsOnce sync.Once
 	// sffCacheSwept is set once the leftovers of earlier processes are gone.
 	sffCacheSwept sync.Once
+	// sffCacheOff: an entry file could not be written or mapped (disk
+	// trouble); nothing more is recorded this session.
+	sffCacheOff atomic.Bool
 )
 
 // sffCaptureExpect registers a sprite of the recording load. Only those are
@@ -78,37 +107,115 @@ var (
 // preload), and their pixels are not this file's.
 func sffCaptureExpect(s *Sprite) {
 	sffCacheMu.Lock()
-	if sffCaptureMap != nil {
-		sffCaptureMap[s] = sffCaptureEntry{}
+	if sffRec != nil {
+		sffRec.entries[s] = sffCaptureEntry{}
 	}
 	sffCacheMu.Unlock()
 }
 
 // sffCaptureAdd is called from SetPxl/SetRaw with the exact post-shrink bytes
-// about to be uploaded, and their trim boxes.
-func sffCaptureAdd(s *Sprite, data []byte, w, h, depth int32, trim [2][4]float32) {
+// of a sprite's texture, and their trim boxes. True: the sprite gets its
+// texture from the cache's copy of them (sffCacheFinish) -- the caller must
+// not upload them. An uncached load that uploaded as it decoded put every
+// sprite of every file on the GPU, most never drawn: 3GiB of unevictable
+// memory booting an HD pack, and a 4GiB Pi thrashed to a halt.
+func sffCaptureAdd(s *Sprite, data []byte, w, h, depth int32, trim [2][4]float32) bool {
 	sffCacheMu.Lock()
-	defer sffCacheMu.Unlock()
-	if _, ours := sffCaptureMap[s]; !ours || sffSpillFailed {
-		return
+	rec := sffRec
+	if rec == nil || rec.failed {
+		sffCacheMu.Unlock()
+		return false
 	}
-	if _, err := sffSpillWriter.Write(data); err != nil {
-		sffSpillFailed = true // disk trouble: the load itself is unaffected
-		return
+	old, ours := rec.entries[s]
+	if !ours {
+		sffCacheMu.Unlock()
+		return false
 	}
-	sffCaptureMap[s] = sffCaptureEntry{sffSpillOff, int32(len(data)), w, h, depth, trim}
-	sffSpillOff += int64(len(data))
+	if old.data != nil {
+		sffHeld -= int64(old.n) // set twice: the first blob stays in the file, unused
+	}
+	n := int64(len(data))
+	rec.entries[s] = sffCaptureEntry{off: rec.off, n: int32(n), w: w, h: h, depth: depth, trim: trim, data: data}
+	rec.off += n
+	sffHeld += n
+	sffEnqueueLocked(func() { rec.writeBlob(s, data) })
+	if sffHeld > sffBudget && !rec.over {
+		rec.over = true
+		for k, e := range rec.entries {
+			if e.written && e.data != nil {
+				sffHeld -= int64(e.n)
+				e.data = nil
+				rec.entries[k] = e
+			}
+		}
+	}
+	for rec.over && sffHeld > sffBudget && !rec.failed {
+		sffCacheCond.Wait()
+	}
+	sffCacheMu.Unlock()
+	return canMmap
+}
+
+func sffEnqueueLocked(job func()) {
+	sffJobs = append(sffJobs, job)
+	sffCacheCond.Broadcast()
+}
+
+func sffEnqueue(job func()) {
+	sffCacheMu.Lock()
+	sffEnqueueLocked(job)
+	sffCacheMu.Unlock()
+}
+
+// sffWriterLoop is the writer goroutine.
+func sffWriterLoop() {
+	for {
+		sffCacheMu.Lock()
+		for len(sffJobs) == 0 {
+			sffCacheCond.Wait()
+		}
+		job := sffJobs[0]
+		sffJobs[0] = nil
+		sffJobs = sffJobs[1:]
+		sffCacheMu.Unlock()
+		job()
+	}
+}
+
+// writeBlob runs on the writer goroutine.
+func (rec *sffRecording) writeBlob(s *Sprite, data []byte) {
+	sffCacheMu.Lock()
+	failed := rec.failed
+	sffCacheMu.Unlock()
+	var err error
+	if !failed {
+		_, err = rec.w.Write(data)
+	}
+	sffCacheMu.Lock()
+	if err != nil {
+		rec.failed = true // disk trouble: the load itself is unaffected
+		sffCacheOff.Store(true)
+	}
+	e := rec.entries[s]
+	e.written = true
+	if rec.over && e.data != nil {
+		sffHeld -= int64(e.n)
+		e.data = nil
+	}
+	rec.entries[s] = e
+	sffCacheCond.Broadcast()
+	sffCacheMu.Unlock()
 }
 
 // sffCacheBegin starts recording; false when the cache is off or another load
 // is already recording (that load just is not cached).
 func sffCacheBegin() bool {
-	if libretroPresent == nil {
+	if libretroPresent == nil || sffCacheOff.Load() {
 		return false
 	}
 	sffCacheMu.Lock()
 	defer sffCacheMu.Unlock()
-	if sffCaptureMap != nil {
+	if sffRec != nil {
 		return false
 	}
 	dir, err := os.UserCacheDir()
@@ -135,34 +242,176 @@ func sffCacheBegin() bool {
 	if err != nil {
 		return false
 	}
-	sffSpillFile, sffSpillWriter = f, bufio.NewWriterSize(f, 1<<20)
-	sffSpillWriter.WriteString(sffCacheMagic)
-	sffSpillOff, sffSpillFailed = int64(len(sffCacheMagic)), false
-	sffCaptureMap = map[*Sprite]sffCaptureEntry{}
+	sffJobsOnce.Do(func() { go sffWriterLoop() })
+	rec := &sffRecording{f: f, w: bufio.NewWriterSize(f, 1<<20), off: int64(len(sffCacheMagic)),
+		entries: map[*Sprite]sffCaptureEntry{}, over: !canMmap}
+	rec.w.WriteString(sffCacheMagic)
+	sffBudget = 0
+	if libretroMemAvailable != nil && !libretroLowRAM {
+		sffBudget = min(libretroMemAvailable()/2, 3<<29)
+	}
+	sffRec = rec
 	return true
 }
 
-// sffCacheEnd stops recording and hands back what was captured plus the
-// entry file holding the pixel blobs (flushed); a nil map says it is not
-// worth storing. The caller owns the file: sffCacheStore, or sffCacheDrop.
-// Safe to call more than once; later calls return nil.
-func sffCacheEnd() (map[*Sprite]sffCaptureEntry, *os.File) {
+// sffCacheAbort ends the recording of a load that failed: nothing is stored.
+func sffCacheAbort() {
 	sffCacheMu.Lock()
-	defer sffCacheMu.Unlock()
-	m, f := sffCaptureMap, sffSpillFile
-	if sffSpillWriter != nil && (sffSpillWriter.Flush() != nil || sffSpillFailed) {
-		m = nil
+	rec := sffRec
+	sffRec = nil
+	if rec != nil {
+		rec.failed = true // the blobs still queued are not worth writing
+		for k, e := range rec.entries {
+			if e.data != nil {
+				sffHeld -= int64(e.n)
+				e.data = nil
+				rec.entries[k] = e
+			}
+		}
+		sffEnqueueLocked(func() { rec.store("", nil) })
 	}
-	sffCaptureMap, sffSpillFile, sffSpillWriter = nil, nil, nil
-	return m, f
+	sffCacheMu.Unlock()
 }
 
-// sffCacheDrop ends a recording without storing it.
-func sffCacheDrop(_ map[*Sprite]sffCaptureEntry, f *os.File) {
-	if f != nil {
-		f.Close()
-		os.Remove(f.Name())
+// sffCacheFlush waits for the writer to be done with all that was queued.
+func sffCacheFlush() {
+	done := make(chan struct{})
+	sffJobsOnce.Do(func() { go sffWriterLoop() })
+	sffEnqueue(func() { close(done) })
+	<-done
+}
+
+// sffCacheFinish ends the recording of a completed load. Its sprites get
+// their texels the lazy way, as after a cached load: textures are made on
+// first draw or in idle time, under the GPU memory cap. The texels are the
+// heap's until the writer has stored the entry file, then the mapped file's;
+// past the heap budget the load waits for the file here and maps it at once.
+// False when the file cannot serve (a failed write, no mapping) and the heap
+// no longer has the texels: the caller loads the source again, not recorded.
+//
+// list is the sprite order of the source file, links[i] >= 0 marks a sprite
+// sharing the texture of list[links[i]]. The table is built here, on the
+// loading thread: paletteMap and PalTable are remapped at runtime once the
+// engine owns the Sff, so reading them later would race.
+func sffCacheFinish(filename string, char, isActPal bool, s *Sff, list []*Sprite, links []int32) bool {
+	sffCacheMu.Lock()
+	rec := sffRec
+	sffRec = nil
+	sffCacheMu.Unlock()
+	if rec == nil {
+		return false
 	}
+	if rec.over {
+		sffEnqueue(func() {
+			if rec.w.Flush() != nil {
+				sffCacheMu.Lock()
+				rec.failed = true
+				sffCacheMu.Unlock()
+			}
+		})
+		sffCacheFlush()
+	}
+	// No capture can come any more, and what the writer still changes in an
+	// entry (written, data) is not read from this copy.
+	sffCacheMu.Lock()
+	captured := make(map[*Sprite]sffCaptureEntry, len(rec.entries))
+	var held int64
+	for k, e := range rec.entries {
+		captured[k] = e
+		if e.data != nil {
+			held += int64(e.n)
+		}
+	}
+	over, failed := rec.over, rec.failed
+	sffCacheMu.Unlock()
+
+	path := sffCachePath(filename, char, isActPal)
+	var table []byte
+	if size, mtime, ok := sffCacheSourceStat(filename); ok && path != "" {
+		table = sffCacheTable(size, mtime, s, list, links, captured)
+	}
+	if !canMmap { // the caller uploaded as it decoded; only the file is left to do
+		sffEnqueue(func() { rec.store(path, table) })
+		return true
+	}
+
+	var m *fileMapping
+	if over {
+		if !failed {
+			m = mmapFile(rec.f)
+		}
+		if m == nil {
+			sffEnqueue(func() { rec.store("", nil) })
+			return false
+		}
+	}
+	lazies := make([]*Sprite, 0, len(captured))
+	texs := make([]*lazyTex, 0, len(captured))
+	offs := make([]int64, 0, len(captured)) // of texs[i] in the file
+	for _, spr := range list {
+		e := captured[spr]
+		if e.n <= 0 {
+			continue
+		}
+		data := e.data
+		if m != nil {
+			if e.off+int64(e.n) > int64(len(m.data)) {
+				sffEnqueue(func() { rec.store("", nil) })
+				return false
+			}
+			data = m.data[e.off : e.off+int64(e.n) : e.off+int64(e.n)]
+		}
+		lazies = append(lazies, spr)
+		offs = append(offs, e.off)
+		texs = append(texs, &lazyTex{data: data, keep: m, w: e.w, h: e.h, depth: e.depth,
+			filter: e.depth > 8 && sys.cfg.Video.RGBSpriteBilinearFilter})
+	}
+	// On the main thread, behind the shareCopy tasks this load queued: they
+	// copy a texture that was never made, and must not run after this.
+	sys.mainThreadTask <- func() {
+		for i, spr := range lazies {
+			spr.lazy, spr.trim = texs[i], captured[spr].trim
+		}
+		for i, spr := range list {
+			if links != nil && links[i] >= 0 {
+				spr.lazy, spr.trim = list[links[i]].lazy, list[links[i]].trim
+			}
+		}
+		lazyEnqueue(lazies) // sorts lazies: texs[i] is not theirs past this
+	}
+
+	sffEnqueue(func() {
+		stored := rec.store(path, table)
+		if over {
+			return
+		}
+		// The heap's texels are on disk: hand the sprites the mapped file.
+		var m *fileMapping
+		if stored {
+			if f, err := os.Open(path); err == nil {
+				m = mmapFile(f)
+				f.Close()
+			}
+		}
+		sffCacheMu.Lock()
+		sffHeld -= held
+		sffCacheCond.Broadcast()
+		sffCacheMu.Unlock()
+		if m == nil {
+			return // they stay on the heap
+		}
+		// On the main thread, the only one that writes a lazyTex.
+		sys.mainThreadTask <- func() {
+			lazyQueue.Lock()
+			for i, l := range texs {
+				if end := offs[i] + int64(len(l.data)); l.data != nil && end <= int64(len(m.data)) {
+					l.data, l.keep = m.data[offs[i]:end:end], m
+				}
+			}
+			lazyQueue.Unlock()
+		}
+	})
+	return true
 }
 
 func sffCachePath(filename string, char, isActPal bool) string {
@@ -196,7 +445,7 @@ func sffCacheSourceStat(filename string) (size, mtime int64, ok bool) {
 // --- store ----------------------------------------------------------------
 
 type sfcWriter struct {
-	w   *bufio.Writer
+	w   io.Writer
 	err error
 }
 
@@ -212,29 +461,12 @@ func (w *sfcWriter) writeBytes(b []byte) {
 	}
 }
 
-// sffCacheStore completes the entry file of a recording with the decoded
-// state of s and puts it in place. list is the sprite order of the source
-// file, links[i] >= 0 marks a sprite sharing the texture of list[links[i]].
-//
-// The write is synchronous on the loading thread: paletteMap and PalTable are
-// remapped at runtime once the engine owns the Sff, so writing later would
-// race. It only ever runs on the first, uncached load -- the one that already
-// pays for the full decode.
-func sffCacheStore(filename string, char, isActPal bool, s *Sff,
-	list []*Sprite, links []int32, captured map[*Sprite]sffCaptureEntry, spill *os.File) {
-	if spill == nil {
-		return
-	}
-	defer os.Remove(spill.Name()) // no-op after a successful rename
-	defer spill.Close()
-	path := sffCachePath(filename, char, isActPal)
-	size, mtime, ok := sffCacheSourceStat(filename)
-	tableOff, err := spill.Seek(0, io.SeekEnd)
-	if path == "" || captured == nil || !ok || err != nil {
-		return
-	}
-
-	w := &sfcWriter{w: bufio.NewWriterSize(spill, 1<<20)}
+// sffCacheTable serializes everything of s but its texels: what follows the
+// blobs in an entry file. Nil when it cannot be written out.
+func sffCacheTable(size, mtime int64, s *Sff, list []*Sprite, links []int32,
+	captured map[*Sprite]sffCaptureEntry) []byte {
+	var buf bytes.Buffer
+	w := &sfcWriter{w: &buf}
 	w.write(size)
 	w.write(mtime)
 	w.write(s.header.Version)
@@ -297,20 +529,37 @@ func sffCacheStore(filename string, char, isActPal bool, s *Sff,
 			w.write(byte(0)) // blank sprite
 		}
 	}
+	if w.err != nil {
+		return nil
+	}
+	return buf.Bytes()
+}
+
+// store runs on the writer goroutine, after the recording's blobs: it
+// appends the table and puts the entry file in place, or removes it (no
+// table, a failed write). True when the entry is in place.
+func (rec *sffRecording) store(path string, table []byte) bool {
+	defer os.Remove(rec.f.Name()) // no-op after a successful rename
+	defer rec.f.Close()
+	sffCacheMu.Lock()
+	failed := rec.failed
+	sffCacheMu.Unlock()
+	if failed || table == nil || path == "" {
+		return false
+	}
 	// A file cut short (power lost before the data reached the disk) has no
 	// footer where a load looks for one.
-	w.write(tableOff)
-	w.writeBytes([]byte(sffCacheMagic))
-
-	if w.err == nil {
-		w.err = w.w.Flush()
+	var foot [8]byte
+	binary.LittleEndian.PutUint64(foot[:], uint64(rec.off))
+	rec.w.Write(table)
+	rec.w.Write(foot[:])
+	rec.w.WriteString(sffCacheMagic)
+	if rec.w.Flush() != nil || rec.f.Close() != nil || os.Rename(rec.f.Name(), path) != nil {
+		sffCacheOff.Store(true)
+		return false
 	}
-	if err := spill.Close(); err != nil || w.err != nil {
-		return
-	}
-	if os.Rename(spill.Name(), path) == nil {
-		sffCacheEvict(filepath.Dir(path), sffCacheMaxBytes, path)
-	}
+	sffCacheEvict(filepath.Dir(path), sffCacheMaxBytes, path)
+	return true
 }
 
 // sffCacheEvict removes the least recently used entries of dir until the

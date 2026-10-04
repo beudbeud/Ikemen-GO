@@ -18,6 +18,9 @@ var (
 	libretroPollInput func()
 	// libretroPads is how many virtual gamepads the frontend exposes.
 	libretroPads int
+	// libretroMemAvailable is the RAM the system could still give, in bytes
+	// (0 when unknown): the sprite cache sizes its write-behind budget on it.
+	libretroMemAvailable func() int64
 	// libretroLowRAM: the machine has under 3GiB (Recalbox recommends a 2GiB
 	// Pi 5); sprite detail Auto then loads HD packs at half definition.
 	libretroLowRAM bool

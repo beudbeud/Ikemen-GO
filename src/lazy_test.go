@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"runtime"
 	"testing"
 	"weak"
@@ -24,8 +25,8 @@ func TestLazyQueue(t *testing.T) {
 
 	// Dropped sprites are skipped; the cap veto stops before making anything.
 	runtime.GC()
-	lazyFull.Store(true)
-	t.Cleanup(func() { lazyFull.Store(false) })
+	lazyRoom.Store(0)
+	t.Cleanup(func() { lazyRoom.Store(math.MaxInt64) })
 	if made, retry := lazyPrefetchOne(); made || retry {
 		t.Fatalf("veto: made %v retry %v", made, retry)
 	}
