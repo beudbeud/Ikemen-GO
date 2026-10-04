@@ -1372,6 +1372,27 @@ func libretroReadInput() {
 		cs.Axes[1] = libretroAnalog(p, C.RETRO_DEVICE_INDEX_ANALOG_LEFT, C.RETRO_DEVICE_ID_ANALOG_Y)
 		cs.Axes[2] = libretroAnalog(p, C.RETRO_DEVICE_INDEX_ANALOG_RIGHT, C.RETRO_DEVICE_ID_ANALOG_X)
 		cs.Axes[3] = libretroAnalog(p, C.RETRO_DEVICE_INDEX_ANALOG_RIGHT, C.RETRO_DEVICE_ID_ANALOG_Y)
+		// The left stick doubles as the d-pad. Packs bind the directions to
+		// the d-pad alone, and the engine lets the stick drive the menus but
+		// not a character: without this it is dead for a whole match.
+		axes := NormalizeAxes(&cs.Axes)
+		thr := sys.cfg.Input.ControllerStickSensitivity
+		if thr <= 0 { // unset: a resting stick is never exactly at zero
+			thr = 0.5
+		}
+		for _, d := range [...]struct {
+			on  bool
+			btn sdl.GameControllerButton
+		}{
+			{axes[0] < -thr, sdl.CONTROLLER_BUTTON_DPAD_LEFT},
+			{axes[0] > thr, sdl.CONTROLLER_BUTTON_DPAD_RIGHT},
+			{axes[1] < -thr, sdl.CONTROLLER_BUTTON_DPAD_UP},
+			{axes[1] > thr, sdl.CONTROLLER_BUTTON_DPAD_DOWN},
+		} {
+			if d.on {
+				cs.Buttons[d.btn] = 1
+			}
+		}
 	}
 	libretroReadKeyboard()
 }
