@@ -39,3 +39,31 @@ func TestMigrateLegacyMenuCursor(t *testing.T) {
 		t.Error("[Replay Info] should not be migrated")
 	}
 }
+
+func TestHiresSelect(t *testing.T) {
+	load := func(s string) *ini.File {
+		t.Helper()
+		f, err := LoadINIText(s, ini.LoadOptions{InsensitiveSections: true, AllowShadows: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	// Super Marvel vs Capcom EoH: select on 640x480, no localcoord.
+	hires := "[Select Info]\npos = 161,39\ntitle.offset = -9999,-9999\np2.face.offset = 639,-6\n" +
+		"p2.name.offset = 615,316\nstage.pos = 158,453\np2.teammenu.pos = 622, 45\n"
+	for _, c := range []struct {
+		name, text string
+		want       bool
+	}{
+		{"hires", hires, true},
+		{"declared localcoord", "[Info]\nlocalcoord = 320,240\n" + hires, false},
+		{"lowres", "[Select Info]\np2.face.offset = 302,13\np2.name.offset = 311,49\nstage.pos = 160,237\n", false},
+		{"lowres, name and stage hidden off screen", "[Select Info]\np2.name.offset = 999,999\nstage.pos = 160,300\n", false},
+		{"no select screen", "[Title Info]\nmenu.pos = 160,232\n", false},
+	} {
+		if got := hiresSelect(load(c.text)); got != c.want {
+			t.Errorf("%s: hiresSelect = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

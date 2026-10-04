@@ -1887,6 +1887,37 @@ func (m *Motif) applyGlyphDefaultsFromMovelist() {
 	}
 }
 
+// hiresSelect tells a WinMugen hi-res screenpack: its select screen is laid
+// out on 640x480 while every other screen stays on 320x240. That engine knew
+// from DoubleRes in mugen.cfg, which is not there to read, and the motif
+// predates localcoord, so the layout is the only clue: at least two anchors of
+// the select screen sit past 320x240 yet inside 640x480 (an element hidden
+// with a far-off value such as -9999 is not one).
+func hiresSelect(user *ini.File) bool {
+	if user == nil || hasUserKey(user, "Info", "localcoord") {
+		return false
+	}
+	sec, err := user.GetSection("Select Info")
+	if err != nil {
+		return false
+	}
+	n := 0
+	for _, name := range []string{"p2.face.offset", "p2.name.offset", "p2.teammenu.pos", "stage.pos"} {
+		if !sec.HasKey(name) {
+			continue
+		}
+		v, _ := iniFirstValue(sec.Key(name))
+		var x, y float64
+		if c, _ := fmt.Sscanf(v, "%f,%f", &x, &y); c != 2 {
+			continue
+		}
+		if (x > 320 || y > 240) && x >= 0 && x <= 640 && y <= 480 {
+			n++
+		}
+	}
+	return n >= 2
+}
+
 // migrateLegacyMenuCursor rewrites the menu.cursor.* keys that old screenpacks
 // fed to their own menuarrow.lua mod (dead on this engine) into the native
 // menu.item.active.bg.* element, so the active menu item stays marked.
@@ -1937,10 +1968,17 @@ func (m *Motif) fixLocalcoordOverrides() {
 		return
 	}
 
+	hires := hiresSelect(m.UserIniFile)
+
 	for _, mergedSec := range m.IniFile.Sections() {
 		secName := mergedSec.Name()
 		if secName == ini.DEFAULT_SECTION {
 			continue
+		}
+		// "0, 0" reads as unspecified: PopulateDataPointers fills in the motif localcoord.
+		reset := "0, 0"
+		if hires && strings.EqualFold(secName, "Select Info") {
+			reset = "640, 480"
 		}
 
 		userSec, _ := m.UserIniFile.GetSection(secName)
@@ -2024,7 +2062,7 @@ func (m *Motif) fixLocalcoordOverrides() {
 			keyNorm := strings.ReplaceAll(keyName, " ", "_")
 			query := strings.ToLower(secNorm + "." + keyNorm)
 
-			if err := m.SetValueUpdate(query, "0, 0"); err != nil {
+			if err := m.SetValueUpdate(query, reset); err != nil {
 				fmt.Printf("Warning: failed to reset localcoord for %s: %v\n", query, err)
 			}
 		}
@@ -2567,6 +2605,10 @@ func (m *Motif) loadFiles() {
 
 	m.loadBgDefProperties(&m.TitleBgDef, "titlebg", m.Files.Spr)
 	m.loadBgDefProperties(&m.SelectBgDef, "selectbg", m.Files.Spr)
+	if bg := m.SelectBgDef.BGDef; hiresSelect(m.UserIniFile) {
+		bg.localcoord = [2]int32{640, 480}
+		bg.localscl = 0.5
+	}
 	m.loadBgDefProperties(&m.VersusBgDef, "versusbg", m.Files.Spr)
 	m.loadBgDefProperties(&m.ContinueBgDef, "continuebg", m.Files.Spr)
 	m.loadBgDefProperties(&m.VictoryBgDef, "victorybg", m.Files.Spr)

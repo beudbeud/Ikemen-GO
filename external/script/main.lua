@@ -749,6 +749,17 @@ function main.f_preloadSetCharHighlight(player, ref)
 	end
 end
 
+-- Localcoord a portrait element is laid out on: its own when it sets one, the
+-- motif's otherwise. 320x240 is what the default motif gives every element, so
+-- it does not tell an element apart.
+function main.f_portraitLocalcoord(params)
+	local lc = params.localcoord
+	if lc == nil or (lc[1] or 0) <= 0 or (lc[1] == 320 and lc[2] == 240) then
+		lc = motif.info.localcoord
+	end
+	return lc[1], lc[2]
+end
+
 function main.f_materializeCharCell(row)
 	local ch = main.t_selChars[row]
 	if ch == nil or ch.playable ~= true or ch.char_ref == nil or ch.cell_data_ready then
@@ -759,7 +770,7 @@ function main.f_materializeCharCell(row)
 		if v[1] ~= -1 then
 			local a = animGetPreloadedCharData(ch.char_ref, v[1], v[2])
 			if a then
-				animSetLocalcoord(a, motif.info.localcoord[1], motif.info.localcoord[2])
+				animSetLocalcoord(a, main.f_portraitLocalcoord(params))
 				animSetLayerno(a, params.layerno)
 				animSetPos(a, 0, 0)
 				animSetScale(
@@ -795,7 +806,7 @@ function main.f_materializeStagePortrait(stageNo)
 			if #v > 0 and v[1] ~= -1 then
 				local a = animGetPreloadedStageData(stageNo, v[1], v[2])
 				if a then
-					animSetLocalcoord(a, motif.info.localcoord[1], motif.info.localcoord[2])
+					animSetLocalcoord(a, main.f_portraitLocalcoord(params))
 					animSetLayerno(a, params.layerno)
 					animSetPos(a, 0, 0)
 					animSetScale(

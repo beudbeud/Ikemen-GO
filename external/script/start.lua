@@ -728,7 +728,7 @@ function start.f_animGet(ref, side, member, params, velParams, loop, srcAnim)
 					xscale = xscale * (charData.cns_scale[1] or 1)
 					yscale = yscale * (charData.cns_scale[2] or 1)
 				end
-				animSetLocalcoord(a, motif.info.localcoord[1], motif.info.localcoord[2])
+				animSetLocalcoord(a, main.f_portraitLocalcoord(params))
 				animSetLayerno(a, params.layerno)
 				animSetVelocity(a, velParams.velocity[1], velParams.velocity[2])
 				animSetMaxDist(a, velParams.maxdist[1], velParams.maxdist[2])
