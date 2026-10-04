@@ -471,6 +471,9 @@ func TestLibretroSffCacheEvict(t *testing.T) {
 	recent := mk("c.sfc", 40, time.Hour)
 	fresh := mk("d.sfc", 40, 0)
 	other := mk("notes.txt", 1000, 5*time.Hour) // not an entry: never counted or removed
+	oldFree := sffCacheFree
+	t.Cleanup(func() { sffCacheFree = oldFree })
+	sffCacheFree = func(string) int64 { return -1 } // unknown: the cap alone decides
 
 	sffCacheEvict(dir, 100, fresh)
 	for p, want := range map[string]bool{oldest: false, older: false, recent: true, fresh: true, other: true} {
@@ -486,6 +489,17 @@ func TestLibretroSffCacheEvict(t *testing.T) {
 	}
 	if _, err := os.Stat(recent); err == nil {
 		t.Error("older entry should go when over the cap")
+	}
+
+	// Under the cap, but the disk is short of its reserve by 50 bytes: the
+	// oldest entries go until those 50 are back.
+	a, b, c := mk("a.sfc", 40, 3*time.Hour), mk("b.sfc", 40, 2*time.Hour), mk("c.sfc", 40, time.Hour)
+	sffCacheFree = func(string) int64 { return sffCacheReserve - 50 }
+	sffCacheEvict(dir, 1<<20, fresh)
+	for p, want := range map[string]bool{a: false, b: false, c: true, fresh: true} {
+		if _, err := os.Stat(p); (err == nil) != want {
+			t.Errorf("reserve: %s exists=%v, want %v", filepath.Base(p), err == nil, want)
+		}
 	}
 }
 

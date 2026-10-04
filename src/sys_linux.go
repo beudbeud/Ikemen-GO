@@ -36,6 +36,16 @@ func threadRusage() (faults, preempt int64, user, sys time.Duration) {
 		time.Duration(syscall.TimevalToNsec(ru.Utime)), time.Duration(syscall.TimevalToNsec(ru.Stime))
 }
 
+// diskFree is the space left to this process on the partition holding dir,
+// in bytes; negative when unknown.
+func diskFree(dir string) int64 {
+	var st syscall.Statfs_t
+	if syscall.Statfs(dir, &st) != nil {
+		return -1
+	}
+	return int64(st.Bavail) * int64(st.Bsize)
+}
+
 // lowPriority gives the calling goroutine's thread nice 10 for the rest of
 // the goroutine: background loading must not take the CPU the game and
 // frontend threads need for 60fps on a 4-core Pi. Locked, the thread is

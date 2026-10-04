@@ -562,9 +562,20 @@ func (rec *sffRecording) store(path string, table []byte) bool {
 	return true
 }
 
+// sffCacheReserve is what the cache leaves free on its partition, whatever
+// its cap allows: the share also holds the frontend's saves and settings,
+// and a full disk turns the cache off for the session. It covers the next
+// entry too, written before its own eviction pass: the largest seen is 0.6GiB.
+const sffCacheReserve = 1 << 30
+
+// sffCacheFree is the free space of the partition holding dir, negative when
+// unknown (a variable for the tests).
+var sffCacheFree = diskFree
+
 // sffCacheEvict removes the least recently used entries of dir until the
-// entries total at most max bytes. keep, the entry just written, stays even
-// when it alone is over the cap: it is what the next launch will read.
+// entries total at most max bytes and sffCacheReserve is free on the disk.
+// keep, the entry just written, stays even when it alone is over the cap:
+// it is what the next launch will read.
 func sffCacheEvict(dir string, max int64, keep string) {
 	paths, _ := filepath.Glob(filepath.Join(dir, "*.sfc"))
 	type entry struct {
@@ -579,6 +590,10 @@ func sffCacheEvict(dir string, max int64, keep string) {
 			entries = append(entries, entry{p, st.Size(), st.ModTime()})
 			total += st.Size()
 		}
+	}
+	// Every byte evicted is a byte freed, so the reserve is a cap too.
+	if free := sffCacheFree(dir); free >= 0 {
+		max = min(max, total+free-sffCacheReserve)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].mtime.Before(entries[j].mtime) })
 	for _, e := range entries {
