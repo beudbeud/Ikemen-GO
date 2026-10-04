@@ -717,7 +717,15 @@ func (s *Sprite) texture() Texture {
 	l := s.lazy
 	if l.tex == nil {
 		t0 := time.Now()
-		if !l.make() {
+		cold := !l.warm.Load()
+		if cold {
+			lazyUrgent.Add(1)
+		}
+		ok := l.make()
+		if cold {
+			lazyUrgent.Add(-1)
+		}
+		if !ok {
 			return nil
 		}
 		lazyDemandN++
@@ -835,6 +843,13 @@ var lazyRoom atomic.Int64
 
 func init() { lazyRoom.Store(math.MaxInt64) }
 
+// lazyUrgent counts the textures the GL thread is making from texels not read
+// in yet, and lazyWarm lets one warmer at a time read, a piece at a time: an
+// SD card serves one request after the other, and a first-drawn sprite waited
+// ~20ms behind the read-ahead of the three or four files being warmed.
+var lazyUrgent atomic.Int32
+var lazyWarm sync.Mutex
+
 // lazyEnqueue adds the lazy textures of one loaded file, lowest sprite
 // groups first: stance, intros and basic moves come before effects.
 func lazyEnqueue(sprites []*Sprite) {
@@ -866,7 +881,16 @@ func lazyEnqueue(sprites []*Sprite) {
 			lazyQueue.Lock()
 			data, keep := l.data, l.keep
 			lazyQueue.Unlock()
-			populate(data)
+			for len(data) > 0 {
+				n := min(len(data), 256<<10)
+				for lazyUrgent.Load() > 0 {
+					time.Sleep(time.Millisecond)
+				}
+				lazyWarm.Lock()
+				populate(data[:n])
+				lazyWarm.Unlock()
+				data = data[n:]
+			}
 			runtime.KeepAlive(keep)
 			l.warm.Store(true)
 		}
