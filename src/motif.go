@@ -1918,6 +1918,52 @@ func hiresSelect(user *ini.File) bool {
 	return n >= 2
 }
 
+// legacyMenu tells a menu section written for the engines up to 0.99. Those
+// drew the options and replay menus on 320x240 whatever the motif's
+// localcoord, unless the section said menu.uselocalcoord = 1: an HD
+// screenpack of that time (Ultimate Cosmos, 1280x720) gives its menu
+// 320x240 positions and scales, and comes out tiny in a corner on the motif's
+// localcoord. A motif that declares an ikemenversion, or puts menu.pos past
+// 320x240, is taken at its word.
+func legacyMenu(user *ini.File, secName string) bool {
+	if user == nil || !strings.EqualFold(secName, "Option Info") && !strings.EqualFold(secName, "Replay Info") {
+		return false
+	}
+	if info, err := user.GetSection("Info"); err == nil && strings.TrimSpace(info.Key("ikemenversion").String()) != "" {
+		return false
+	}
+	sec, err := user.GetSection(secName)
+	if err != nil {
+		return false
+	}
+	if sec.HasKey("menu.uselocalcoord") {
+		v, _ := iniFirstValue(sec.Key("menu.uselocalcoord"))
+		return strings.TrimSpace(v) == "0"
+	}
+	if sec.HasKey("menu.pos") {
+		v, _ := iniFirstValue(sec.Key("menu.pos"))
+		var x, y float64
+		if c, _ := fmt.Sscanf(v, "%f,%f", &x, &y); c == 2 && (x > 320 || y > 240) {
+			return false
+		}
+	}
+	return true
+}
+
+// legacyMenuElement reports whether an element of a legacy menu section was
+// drawn on 320x240: its texts and boxes were, its sprites (item backgrounds,
+// arrows) followed the motif. The options title was only when the motif left
+// its place alone.
+func legacyMenuElement(merged, user *ini.Section, prefix string) bool {
+	if strings.HasPrefix(prefix, "title.") {
+		return !strings.EqualFold(merged.Name(), "Option Info") || user == nil || !user.HasKey("title.offset")
+	}
+	if !strings.HasPrefix(prefix, "menu.") && !strings.HasPrefix(prefix, "keymenu.") && !strings.HasPrefix(prefix, "textinput.") {
+		return false
+	}
+	return !merged.HasKey(prefix+"spr") && !merged.HasKey(prefix+"anim")
+}
+
 // migrateLegacyMenuCursor rewrites the menu.cursor.* keys that old screenpacks
 // fed to their own menuarrow.lua mod (dead on this engine) into the native
 // menu.item.active.bg.* element, so the active menu item stays marked.
@@ -1980,6 +2026,8 @@ func (m *Motif) fixLocalcoordOverrides() {
 		if hires && strings.EqualFold(secName, "Select Info") {
 			reset = "640, 480"
 		}
+
+		legacy := legacyMenu(m.UserIniFile, secName)
 
 		userSec, _ := m.UserIniFile.GetSection(secName)
 		defSec, _ := m.DefaultOnlyIni.GetSection(secName)
@@ -2062,7 +2110,11 @@ func (m *Motif) fixLocalcoordOverrides() {
 			keyNorm := strings.ReplaceAll(keyName, " ", "_")
 			query := strings.ToLower(secNorm + "." + keyNorm)
 
-			if err := m.SetValueUpdate(query, reset); err != nil {
+			val := reset
+			if legacy && legacyMenuElement(mergedSec, userSec, lowerPrefix) {
+				val = "320, 240"
+			}
+			if err := m.SetValueUpdate(query, val); err != nil {
 				fmt.Printf("Warning: failed to reset localcoord for %s: %v\n", query, err)
 			}
 		}
