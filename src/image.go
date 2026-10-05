@@ -869,6 +869,9 @@ func lazyEnqueue(sprites []*Sprite) {
 	go func() {
 		lowPriority()
 		for _, e := range es {
+			if l := e.w.Value(); l == nil || l.warm.Load() {
+				continue // dropped, or read in by its load (sffCacheLoad)
+			}
 			// Nothing more is prefetched past the GPU memory cap: reading
 			// texels in then only crowds the page cache of a small board.
 			for lazyRoom.Load() <= 0 && e.w.Value() != nil {
@@ -881,20 +884,30 @@ func lazyEnqueue(sprites []*Sprite) {
 			lazyQueue.Lock()
 			data, keep := l.data, l.keep
 			lazyQueue.Unlock()
-			for len(data) > 0 {
-				n := min(len(data), 256<<10)
-				for lazyUrgent.Load() > 0 {
-					time.Sleep(time.Millisecond)
-				}
-				lazyWarm.Lock()
-				populate(data[:n])
-				lazyWarm.Unlock()
-				data = data[n:]
-			}
+			lazyRead(data, time.Time{})
 			runtime.KeepAlive(keep)
 			l.warm.Store(true)
 		}
 	}()
+}
+
+// lazyRead reads mapped texels in, a piece at a time, giving way to the GL
+// thread between pieces. False when until came first (zero: no limit).
+func lazyRead(data []byte, until time.Time) bool {
+	for len(data) > 0 {
+		if !until.IsZero() && time.Now().After(until) {
+			return false
+		}
+		n := min(len(data), 256<<10)
+		for lazyUrgent.Load() > 0 {
+			time.Sleep(time.Millisecond)
+		}
+		lazyWarm.Lock()
+		populate(data[:n])
+		lazyWarm.Unlock()
+		data = data[n:]
+	}
+	return true
 }
 
 // lazyPrefetchOne makes the next queued texture that is still wanted (GL

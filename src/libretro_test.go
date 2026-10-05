@@ -337,9 +337,16 @@ func testSffCacheRoundTrip(t *testing.T, available int64) {
 		t.Fatalf("%d bytes still counted on the heap", sffHeld)
 	}
 
+	// On a disk that seeks, the load itself reads the texels in.
+	oldSeeks := sffCacheSeeks
+	sffCacheSeeks = func(*os.File, int64) bool { return true }
+	t.Cleanup(func() { sffCacheSeeks = oldSeeks })
 	got := sffCacheLoad(src, true, false)
 	if got == nil {
 		t.Fatal("cache miss after store")
+	}
+	if !got.sprites[[2]uint16{7, 0}].lazy.warm.Load() || !got.sprites[[2]uint16{0, 0}].lazy.warm.Load() {
+		t.Fatal("texels not read in by the load on a disk that seeks")
 	}
 	if got.header.NumberOfSprites != 4 || len(got.sprites) != 4 {
 		t.Fatalf("header/sprites: %d/%d", got.header.NumberOfSprites, len(got.sprites))

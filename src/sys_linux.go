@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
 	"os"
 	"runtime"
 	"syscall"
@@ -44,6 +46,25 @@ func diskFree(dir string) int64 {
 		return -1
 	}
 	return int64(st.Bavail) * int64(st.Bsize)
+}
+
+// mayRotate is false when the kernel says the disk under f has no moving part
+// (an SD card, an SSD) or can be pulled out: a USB stick, which USB storage
+// calls rotational like the hard disk it is told apart from here. True
+// settles nothing.
+func mayRotate(f *os.File) bool {
+	var st syscall.Stat_t
+	if syscall.Fstat(int(f.Fd()), &st) != nil {
+		return true
+	}
+	dev := fmt.Sprintf("/sys/dev/block/%d:%d/", st.Dev>>8&0xfff|st.Dev>>32&^0xfff, st.Dev&0xff|st.Dev>>12&^0xff)
+	for _, disk := range []string{dev, dev + "../"} { // a whole disk, a partition
+		if rot, err := os.ReadFile(disk + "queue/rotational"); err == nil {
+			rem, _ := os.ReadFile(disk + "removable")
+			return !bytes.HasPrefix(rot, []byte("0")) && !bytes.HasPrefix(rem, []byte("1"))
+		}
+	}
+	return true
 }
 
 // lowPriority gives the calling goroutine's thread nice 10 for the rest of

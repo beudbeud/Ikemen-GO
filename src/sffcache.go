@@ -15,7 +15,8 @@ package main
 // then only appends the table (everything but texels: palettes, sprite
 // headers, where each blob is, its trim boxes) and renames the file, so
 // texels reach the disk once. A load reads the table in one piece and maps
-// the rest: no texel page is touched until a sprite is warmed or drawn.
+// the rest: no texel page is touched until a sprite is warmed or drawn --
+// but on a hard disk, where the load reads them in (sffCacheLoad).
 //
 // Writing happens behind the load, on its own goroutine: an SD card takes
 // ~12MiB/s, and a loader that waited for it kept an HD pack's first boot on
@@ -39,8 +40,10 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -861,10 +864,55 @@ func sffCacheLoad(filename string, char, isActPal bool) *Sff {
 	if r.err {
 		return drop()
 	}
+	// A hard disk takes ~15ms to bring a sprite drawn for the first time,
+	// where flash takes 1-2ms: a match hitched on every new move for the
+	// 10-15s the warm-up was still reading (55 frames late in the first
+	// minute, on a 7200rpm disk), and to its end for what the warm-up leaves
+	// out at the GPU cap. There the load reads its texels in itself, front to
+	// back, one file at a time: 7s more loading for 1.5GiB, no frame late.
+	// A disk too slow at that as well (under 16MiB/s) is not waited for: the
+	// warm-up goes on behind as ever.
+	whole := false
+	if m != nil && len(lazies) > 0 && sffCacheSeeks(f, tableOff) {
+		texels := m.data[:tableOff]
+		head := min(len(texels), 16<<20)
+		whole = lazyRead(texels[:head], time.Now().Add(time.Second)) &&
+			lazyRead(texels[head:], time.Now().Add(time.Duration(len(texels)>>24+1)*time.Second))
+		if whole {
+			for _, spr := range lazies {
+				spr.lazy.warm.Store(true)
+			}
+		}
+	}
 	lazyEnqueue(lazies)
 	now := time.Now()
 	os.Chtimes(path, now, now) // eviction order is last use, not creation
-	fmt.Fprintf(os.Stderr, "Ikemen GO: sff %s: %d sprites from cache in %dms\n",
-		filename, ns, time.Since(start).Milliseconds())
+	fmt.Fprintf(os.Stderr, "Ikemen GO: sff %s: %d sprites from cache in %dms (texels read in: %v)\n",
+		filename, ns, time.Since(start).Milliseconds(), whole)
 	return s
+}
+
+// sffCacheSeeks tells a disk that takes its time to reach another place of a
+// file: the median of five reads at random places is 8-11ms on a hard disk,
+// ~0.5ms on an SD card or a USB stick, nothing from the page cache (measured;
+// a variable for the tests). Random, or a hard disk answers from its own
+// cache the second time a file is loaded. The warm-up is held meanwhile:
+// behind its reads an SD card answered in 4ms and passed for a hard disk.
+var sffCacheSeeks = func(f *os.File, size int64) bool {
+	if size <= 0 || !mayRotate(f) {
+		return false
+	}
+	// Its own source: the global one is seeded for reproducible matches.
+	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
+	var b [1]byte
+	var took [5]time.Duration
+	lazyWarm.Lock()
+	for i := range took {
+		t0 := time.Now()
+		f.ReadAt(b[:], rnd.Int63n(size))
+		took[i] = time.Since(t0)
+	}
+	lazyWarm.Unlock()
+	slices.Sort(took[:])
+	return took[2] > 3*time.Millisecond
 }
